@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JobRadar | Your Job Search, on Autopilot</title>
+    <meta
+      name="description"
+      content="Get tailored resumes, cover letters, and match reports delivered to your inbox for roles that fit you. Set up your personalized job-hunting pipeline in 10 minutes."
+    />
+    <meta
+      property="og:title"
+      content="Autopilot | Your Job Search, on Autopilot"
+    />
+    <meta
+      property="og:description"
+      content="Tailored resumes, cover letters, and match reports delivered to your inbox. Set up in 10 minutes."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <meta
+      name="twitter:title"
+      content="Autopilot | Your Job Search, on Autopilot"
+    />
+    <meta
+      name="twitter:description"
+      content="Tailored resumes, cover letters, and match reports delivered to your inbox. Set up in 10 minutes."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="hero-mode">
+    <div class="topbar">
+      <div class="logo">JobRadar<span> | onboarding</span></div>
+      <div class="progress-wrap">
+        <div class="progress-dot active" data-step="0"></div>
+        <div class="progress-dot" data-step="1"></div>
+        <div class="progress-dot" data-step="2"></div>
+        <div class="progress-dot" data-step="3"></div>
+        <div class="progress-dot" data-step="4"></div>
+        <div class="progress-dot" data-step="5"></div>
+        <span class="progress-label"
+          >Step <span id="stepCounter">1</span> of 6</span
+        >
+      </div>
+    </div>
+
+    <div class="container">
+      <!-- STEP 0: Welcome -->
+      <div class="step active" data-step="0">
+        <div class="step-number">Welcome</div>
+        <h2>Your job search,<br />on <em>autopilot</em></h2>
+        <p class="subtitle">
+          We'll set up your personalized job-hunting pipeline in about 10
+          minutes. Every week, you'll receive tailored resumes, cover letters,
+          and match reports for roles that fit you &mdash; ready for your final
+          review before applying.
+        </p>
+        <div class="steps-overview">
+          <div class="steps-overview-grid">
+            <div>
+              <div class="steps-overview-number">01</div>
+              <div class="steps-overview-label">
+                Your profile<br />&amp; resume
+              </div>
+            </div>
+            <div>
+              <div class="steps-overview-number">02</div>
+              <div class="steps-overview-label">Search<br />preferences</div>
+            </div>
+            <div>
+              <div class="steps-overview-number">03</div>
+              <div class="steps-overview-label">Experience<br />discovery</div>
+            </div>
+          </div>
+        </div>
+        <div class="nav-row nav-row--borderless">
+          <div></div>
+          <button class="btn btn-primary" onclick="nextStep()">
+            Begin Onboarding
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 1: Basic Info -->
+      <div class="step" data-step="1">
+        <div class="step-number">Step 01</div>
+        <h2>About <em>you</em></h2>
+        <p class="subtitle">
+          Basic contact information for your application materials.
+        </p>
+
+        <div class="field-row">
+          <div class="field">
+            <label>First Name</label>
+            <input type="text" id="firstName" placeholder="Tayo" required />
+          </div>
+          <div class="field">
+            <label>Last Name</label>
+            <input type="text" id="lastName" placeholder="Fasunon" required />
+          </div>
+        </div>
+        <div class="field">
+          <label>Email</label>
+          <input
+            type="email"
+            id="email"
+            placeholder="tayo@example.com"
+            required
+          />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Phone</label>
+            <input type="tel" id="phone" placeholder="+1 365 994 8961" />
+          </div>
+          <div class="field">
+            <label>Location</label>
+            <input
+              type="text"
+              id="location"
+              placeholder="Toronto, Ontario, Canada"
+            />
+          </div>
+        </div>
+        <div class="field">
+          <label>LinkedIn URL</label>
+          <input
+            type="url"
+            id="linkedin"
+            placeholder="https://linkedin.com/in/yourname"
+          />
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Continue</button>
+        </div>
+      </div>
+
+      <!-- STEP 2: Resume -->
+      <div class="step" data-step="2">
+        <div class="step-number">Step 02</div>
+        <h2>Your <em>resume</em></h2>
+        <p class="subtitle">
+          Upload your current resume or paste the content. We'll use this as the
+          foundation for all tailored versions.
+        </p>
+
+        <div
+          class="upload-zone"
+          id="uploadZone"
+          onclick="document.getElementById('resumeFile').click()"
+        >
+          <div class="upload-icon">&#8593;</div>
+          <div class="upload-text" id="uploadText">
+            Drop your resume here or <strong>click to browse</strong><br />
+            <span class="file-types">.pdf, .docx, or .txt</span>
+          </div>
+          <input
+            type="file"
+            id="resumeFile"
+            accept=".pdf,.docx,.doc,.txt,.md"
+            class="file-input-hidden"
+            onchange="handleFileUpload(this)"
+          />
+        </div>
+
+        <div class="or-divider">or paste below</div>
+
+        <div class="resume-area field">
+          <label>Resume Content</label>
+          <textarea
+            id="resumeText"
+            placeholder="Paste your full resume text here...&#10;&#10;Include: summary, experience, education, skills, certifications.&#10;The more detail, the better the tailoring."
+          ></textarea>
+          <div class="field-hint">
+            Include all roles, achievements, and metrics. We'll strategically
+            reframe (never fabricate) your experience to match each opportunity.
+          </div>
+        </div>
+
+        <div class="cover-letter-section">
+          <div class="field">
+            <label
+              >Cover Letter Sample
+              <span class="label-optional">(optional)</span></label
+            >
+            <div
+              class="upload-zone upload-zone--compact"
+              id="clUploadZone"
+              onclick="document.getElementById('coverLetterFile').click()"
+            >
+              <div class="upload-text" id="clUploadText">
+                Drop a cover letter here or <strong>click to browse</strong
+                ><br />
+                <span class="file-types">.txt or .md</span>
+              </div>
+              <input
+                type="file"
+                id="coverLetterFile"
+                accept=".txt,.md"
+                class="file-input-hidden"
+                onchange="handleCoverLetterUpload(this)"
+              />
+            </div>
+            <div class="or-divider">or paste below</div>
+            <textarea
+              id="coverLetterText"
+              class="textarea--medium"
+              placeholder="Paste a cover letter you've written before...&#10;&#10;We'll study your writing style — sentence structure, tone, personality — and match it when generating tailored cover letters for each job."
+            ></textarea>
+            <div class="field-hint">
+              Share any cover letter you've written. We won't copy the content —
+              we'll match your authentic voice and style in every tailored
+              letter we generate.
+            </div>
+          </div>
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Continue</button>
+        </div>
+      </div>
+
+      <!-- STEP 3: Preferences -->
+      <div class="step" data-step="3">
+        <div class="step-number">Step 03</div>
+        <h2>What you're <em>looking for</em></h2>
+        <p class="subtitle">
+          Tell us about your ideal next role. We'll use this to filter and rank
+          opportunities.
+        </p>
+
+        <div class="field">
+          <label>Target Roles</label>
+          <div
+            class="tags-wrap"
+            id="rolesWrap"
+            onclick="this.querySelector('input').focus()"
+          >
+            <input
+              class="tags-input"
+              id="rolesInput"
+              placeholder="Type a role and press Enter..."
+              onkeydown="handleTagKey(event, 'roles')"
+            />
+          </div>
+          <div class="field-hint">
+            e.g. Scrum Master, Product Manager, Agile Coach
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Target Locations</label>
+          <div
+            class="tags-wrap"
+            id="locationsWrap"
+            onclick="this.querySelector('input').focus()"
+          >
+            <input
+              class="tags-input"
+              id="locationsInput"
+              placeholder="Type a city/region and press Enter..."
+              onkeydown="handleTagKey(event, 'locations')"
+            />
+          </div>
+          <div class="field-hint">e.g. Toronto, Ontario, Remote</div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Minimum Salary (Annual)</label>
+            <input type="text" id="minSalary" placeholder="e.g. $80,000" />
+          </div>
+          <div class="field">
+            <label>Work Arrangement</label>
+            <select id="workArrangement">
+              <option value="any">Any (On-site, Hybrid, Remote)</option>
+              <option value="remote">Remote Only</option>
+              <option value="hybrid">Hybrid or Remote</option>
+              <option value="onsite">On-site</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Industries to Avoid</label>
+          <div
+            class="tags-wrap"
+            id="excludeWrap"
+            onclick="this.querySelector('input').focus()"
+          >
+            <input
+              class="tags-input"
+              id="excludeInput"
+              placeholder="Type and press Enter..."
+              onkeydown="handleTagKey(event, 'exclude')"
+            />
+          </div>
+          <div class="field-hint">
+            Companies or industries you want to skip. Leave blank for none.
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Anything else we should know?</label>
+          <textarea
+            id="prefNotes"
+            class="textarea--short"
+            placeholder="e.g. I prefer companies with 100+ employees, I'm open to contract roles, I need visa sponsorship..."
+          ></textarea>
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Continue</button>
+        </div>
+      </div>
+
+      <!-- STEP 4: Experience Discovery -->
+      <div class="step" data-step="4">
+        <div class="step-number">Step 04</div>
+        <h2>The <em>discovery</em></h2>
+        <p class="subtitle">
+          These questions surface achievements you may not have on your resume.
+          This is what makes our tailoring exceptional &mdash; we find the
+          hidden gold in your experience.
+        </p>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            What's the largest team you've led or coached?
+          </div>
+          <div class="q-why">
+            Helps us frame your leadership scope for senior roles.
+          </div>
+          <input
+            type="text"
+            id="d_teamSize"
+            placeholder="e.g. 3 cross-functional teams, ~25 people across 4 time zones"
+          />
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            What's the highest-value project or budget you've managed?
+          </div>
+          <div class="q-why">
+            Dollar figures are powerful differentiators in resumes.
+          </div>
+          <input
+            type="text"
+            id="d_budget"
+            placeholder="e.g. $15M digital transformation program"
+          />
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            Name 2-3 measurable improvements you've driven.
+          </div>
+          <div class="q-why">
+            Metrics with % or $ beat vague descriptions every time.
+          </div>
+          <textarea
+            id="d_metrics"
+            placeholder="e.g.&#10;- Reduced impediment resolution time by 78%&#10;- Increased team velocity by 30%&#10;- Saved $400K through PI planning optimization"
+          ></textarea>
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            What certifications or credentials do you hold?
+          </div>
+          <div class="q-why">
+            Certifications are high-signal for ATS filters.
+          </div>
+          <input
+            type="text"
+            id="d_certs"
+            placeholder="e.g. PSM1, SAFe SSM, PMP, AWS Certified, MBA"
+          />
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            Describe a challenge you overcame that you're proud of.
+          </div>
+          <div class="q-why">
+            This becomes a STAR story for cover letters and interview prep.
+          </div>
+          <textarea
+            id="d_challenge"
+            placeholder="e.g. Inherited a team with 40% turnover and no defined process. Introduced Scrum, built psychological safety, and within 6 months had the highest-performing team in the department."
+          ></textarea>
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            What tools and technologies are you most proficient with?
+          </div>
+          <div class="q-why">
+            Ensures we don't miss technical keywords that ATS systems scan for.
+          </div>
+          <input
+            type="text"
+            id="d_tools"
+            placeholder="e.g. JIRA, Confluence, Azure DevOps, Power BI, Miro, Figma"
+          />
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">What industries have you worked in?</div>
+          <div class="q-why">
+            Cross-industry experience is reframed as adaptability for target
+            sectors.
+          </div>
+          <input
+            type="text"
+            id="d_industries"
+            placeholder="e.g. FinTech, Entertainment/VFX, EdTech, Healthcare"
+          />
+        </div>
+
+        <div class="discovery-q">
+          <div class="q-label">
+            Is there anything about your experience you feel is
+            underrepresented?
+          </div>
+          <div class="q-why">
+            This is often the most valuable answer — skills you use daily but
+            never put on paper.
+          </div>
+          <textarea
+            id="d_hidden"
+            placeholder="e.g. I regularly coach product owners on backlog prioritization but it's not in any of my job descriptions. I've also facilitated 50+ workshops for stakeholders at the VP level."
+          ></textarea>
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">
+            Review &amp; Submit
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 5: Review -->
+      <div class="step" data-step="5">
+        <div class="step-number">Review</div>
+        <h2>Everything <em>look right?</em></h2>
+        <p class="subtitle">
+          Review your information below. Once submitted, we'll set up your
+          pipeline and deliver your first batch of tailored applications within
+          48 hours.
+        </p>
+
+        <div id="reviewContent"></div>
+
+        <div class="nav-row">
+          <button class="btn btn-secondary" onclick="prevStep()">
+            Back to Edit
+          </button>
+          <button
+            class="btn btn-primary"
+            onclick="submitOnboarding()"
+            id="submitBtn"
+          >
+            Submit &amp; Start My Pipeline
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 6: Confirmation -->
+      <div class="step" data-step="6">
+        <div class="completion">
+          <div class="completion-icon">&#10003;</div>
+          <h2>You're <em>all set</em></h2>
+          <p class="subtitle">
+            Your onboarding data has been saved. We'll configure your pipeline
+            and deliver your first batch of tailored applications within 48
+            hours.
+          </p>
+          <div class="next-steps">
+            <div class="next-steps-title">What happens next</div>
+            <div class="next-steps-list">
+              1. We review your profile &amp; discovery answers<br />
+              2. Your search pipeline is configured<br />
+              3. First tailored applications delivered to your inbox<br />
+              4. You review, approve, and apply
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

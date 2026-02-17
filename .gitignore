@@ -1,0 +1,57 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# ---- Secrets & credentials ----
+config.yaml
+service_account.json
+.env
+.env.*
+
+# ---- Customer data (PII, resumes, job descriptions) ----
+customers/
+
+# ---- Pipeline runtime state & logs ----
+state.json
+tailor_state.json
+notify_state.json
+pipeline.log
+*.log
+
+# ---- Generated digests ----
+digest.html
+
+# ---- Archive (legacy data) ----
+archive/
+
+# ---- Playwright MCP logs ----
+.playwright-mcp/
+
+# ---- Reference screenshots (Playwright captures) ----
+docs/screenshots/ziprecruiter/
+docs/screenshots/resumegen/
+docs/screenshots/redesign/
+docs/screenshots/ab-testing/
+docs/
+
+# ---- Scratch / prototype HTML ----
+ziprecruiter-clone.html
+
+# ---- Compiled / binary artifacts ----
+*.docx
+*.rar
+*.zip
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---- IDE / editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
