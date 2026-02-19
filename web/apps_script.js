@@ -28,6 +28,12 @@ function doPost(e) {
     const ss = getOrCreateSheet();
     const sheet = ss.getSheetByName('Submissions');
 
+    const resumeStatus = data.resumeText
+      ? 'Text (' + data.resumeText.length + ' chars)'
+      : data.resumeFileData
+        ? 'File: ' + (data.resumeFileName || 'unknown')
+        : 'No';
+
     sheet.appendRow([
       new Date(),
       data.firstName,
@@ -40,18 +46,56 @@ function doPost(e) {
       (data.locations || []).join(', '),
       data.minSalary || '',
       data.workArrangement || '',
-      data.resumeText ? 'Yes (' + data.resumeText.length + ' chars)' : 'No',
+      resumeStatus,
       data.coverLetterText ? 'Yes (' + data.coverLetterText.length + ' chars)' : 'No',
       data.discovery ? data.discovery.certs || '' : '',
       data.submittedAt || '',
     ]);
 
     // ── 2. Save full JSON to Drive (for auto-import) ──
-    const folder = getOrCreateFolder('Onboarding_Inbox');
+    const folder = getOrCreateFolder('jobRadar_Inbox');
     const filename = 'onboarding_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.json';
     folder.createFile(filename, JSON.stringify(data, null, 2), 'application/json');
 
-    // ── 3. Email you the full JSON ──
+    // ── 3. Save binary resume file to Drive (admin visibility) ──
+    if (data.resumeFileData && data.resumeFileName) {
+      try {
+        var ext = data.resumeFileName.split('.').pop().toLowerCase();
+        var mimeType = ext === 'pdf' ? 'application/pdf'
+                     : ext === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                     : 'application/octet-stream';
+        var binaryFilename = 'resume_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.' + ext;
+        var decoded = Utilities.newBlob(
+          Utilities.base64Decode(data.resumeFileData),
+          mimeType,
+          binaryFilename
+        );
+        folder.createFile(decoded);
+      } catch (fileErr) {
+        Logger.log('Binary file save failed: ' + fileErr.toString());
+      }
+    }
+
+    // ── 4. Save binary cover letter file to Drive (if uploaded) ──
+    if (data.coverLetterFileData && data.coverLetterFileName) {
+      try {
+        var clExt = data.coverLetterFileName.split('.').pop().toLowerCase();
+        var clMimeType = clExt === 'pdf' ? 'application/pdf'
+                       : clExt === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                       : 'application/octet-stream';
+        var clBinaryFilename = 'cover_letter_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.' + clExt;
+        var clDecoded = Utilities.newBlob(
+          Utilities.base64Decode(data.coverLetterFileData),
+          clMimeType,
+          clBinaryFilename
+        );
+        folder.createFile(clDecoded);
+      } catch (clFileErr) {
+        Logger.log('Cover letter file save failed: ' + clFileErr.toString());
+      }
+    }
+
+    // ── 5. Email you the full JSON ──
     const jsonBlob = Utilities.newBlob(
       JSON.stringify(data, null, 2),
       'application/json',
@@ -65,7 +109,8 @@ function doPost(e) {
           + 'Name: ' + data.firstName + ' ' + data.lastName + '\n'
           + 'Email: ' + data.email + '\n'
           + 'Roles: ' + (data.roles || []).join(', ') + '\n'
-          + 'Locations: ' + (data.locations || []).join(', ') + '\n\n'
+          + 'Locations: ' + (data.locations || []).join(', ') + '\n'
+          + 'Resume: ' + resumeStatus + '\n\n'
           + 'Full JSON attached. Run:\n'
           + '  python manage.py import ' + filename + '\n',
       attachments: [jsonBlob],

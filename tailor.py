@@ -123,8 +123,16 @@ def md_to_docx(md_path: Path, docx_path: Path):
 # ---------------------------------------------------------------------------
 # Claude CLI integration
 # ---------------------------------------------------------------------------
+def _clean_env() -> dict:
+    """Return a copy of os.environ without CLAUDECODE so nested sessions work."""
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    return env
+
+
 def call_claude(prompt: str, max_retries: int = 2) -> str:
     """Call the claude CLI in non-interactive mode and return the response."""
+    env = _clean_env()
     for attempt in range(max_retries + 1):
         try:
             result = subprocess.run(
@@ -138,6 +146,7 @@ def call_claude(prompt: str, max_retries: int = 2) -> str:
                 text=True,
                 timeout=300,  # 5 minute timeout per call
                 cwd=str(ROOT),
+                env=env,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -158,7 +167,171 @@ def call_claude(prompt: str, max_retries: int = 2) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Autonomous skill integration
+# ---------------------------------------------------------------------------
+AUTONOMOUS_SKILL_PATH = Path.home() / ".claude" / "skills" / "resume-tailoring-autonomous" / "SKILL.md"
+
+
+def load_autonomous_skill() -> str:
+    """Load the autonomous skill system prompt. Exits if missing."""
+    if not AUTONOMOUS_SKILL_PATH.exists():
+        print(f"CRITICAL: Autonomous skill not found at {AUTONOMOUS_SKILL_PATH}")
+        print(f"Cannot proceed with tailoring. The skill file is required.")
+        sys.exit(1)
+    content = AUTONOMOUS_SKILL_PATH.read_text(encoding="utf-8")
+    print(f"  Autonomous skill loaded: {AUTONOMOUS_SKILL_PATH.name} ({len(content)} chars)")
+    return content
+
+
+def load_resume_library(config: dict) -> str:
+    """Load all resume files from the library directory into a delimited string.
+
+    Falls back to base_resume.md if resumes/ directory doesn't exist (backward compat).
+    Returns empty string if no resume content found.
+    """
+    library_dir = ROOT / config["candidate"].get("resume_library", "resumes")
+    parts = []
+
+    if library_dir.exists() and library_dir.is_dir():
+        for md_file in sorted(library_dir.glob("*.md")):
+            content = md_file.read_text(encoding="utf-8")
+            if content.strip():
+                parts.append(f"=== RESUME FILE: {md_file.name} ===\n{content}\n=== END FILE ===")
+        if parts:
+            print(f"  Resume library: {len(parts)} file(s) from {library_dir.name}/")
+            return "\n\n".join(parts)
+
+    # Fallback: use base_resume.md
+    base_path = ROOT / config["candidate"].get("base_resume", "base_resume.md")
+    if base_path.exists():
+        content = base_path.read_text(encoding="utf-8")
+        if content.strip():
+            print(f"  Resume library: fallback to {base_path.name}")
+            return f"=== RESUME FILE: {base_path.name} ===\n{content}\n=== END FILE ==="
+
+    return ""
+
+
+def load_cover_letter_library(config: dict) -> str:
+    """Load all cover letter files and concatenate for voice reference.
+
+    Falls back to base_cover_letter.md if cover_letters/ doesn't exist.
+    Returns empty string if no cover letter content found.
+    """
+    cl_dir = ROOT / config["candidate"].get("cover_letter_library", "cover_letters")
+    parts = []
+
+    if cl_dir.exists() and cl_dir.is_dir():
+        for md_file in sorted(cl_dir.glob("*.md")):
+            content = md_file.read_text(encoding="utf-8")
+            if content.strip():
+                parts.append(content)
+        if parts:
+            print(f"  Cover letter library: {len(parts)} file(s) from {cl_dir.name}/")
+            return "\n\n---\n\n".join(parts)
+
+    # Fallback: use base_cover_letter.md
+    cl_path = ROOT / config["candidate"].get("base_cover_letter", "base_cover_letter.md")
+    if cl_path.exists():
+        content = cl_path.read_text(encoding="utf-8")
+        if content.strip():
+            print(f"  Cover letter library: fallback to {cl_path.name}")
+            return content
+
+    return ""
+
+
+def call_claude_with_skill(prompt: str, skill_prompt: str, max_retries: int = 2) -> str:
+    """Call claude CLI with the autonomous skill as a system prompt append."""
+    env = _clean_env()
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(
+                [
+                    "claude", "-p", prompt,
+                    "--model", "sonnet",
+                    "--no-session-persistence",
+                    "--output-format", "text",
+                    "--append-system-prompt", skill_prompt,
+                    "--allowedTools", "WebSearch",
+                    "--max-budget-usd", "2.00",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 minute timeout — skill methodology is more complex
+                cwd=str(ROOT),
+                env=env,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            elif result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                print(f"    [Skill] Attempt {attempt+1} failed (exit {result.returncode}): {err[:200]}")
+                if attempt < max_retries:
+                    time.sleep(5)
+                    continue
+                return ""
+        except subprocess.TimeoutExpired:
+            print(f"    [Skill] Attempt {attempt+1} timed out (10 min).")
+            if attempt < max_retries:
+                time.sleep(5)
+                continue
+            return ""
+    return ""
+
+
+def extract_between(text: str, start_marker: str, end_marker: str) -> str:
+    """Extract text between markers, returning empty string if not found."""
+    start_idx = text.find(start_marker)
+    end_idx = text.find(end_marker)
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        return ""
+    return text[start_idx + len(start_marker):end_idx].strip()
+
+
+def build_skill_resume_prompt(resume_library: str, jd_text: str, candidate_name: str,
+                               discovery_notes: str = "") -> str:
+    """Build the prompt for skill-based resume + report generation."""
+    discovery_section = ""
+    if discovery_notes:
+        discovery_section = f"""
+DISCOVERY NOTES (candidate's self-reported achievements, metrics, and context from onboarding):
+---
+{discovery_notes}
+---
+
+"""
+    return f"""TASK: Tailor a resume for {candidate_name} using the autonomous pipeline skill methodology.
+
+MODE: EXPRESS / HEADLESS — Execute all phases automatically. No checkpoints. No interactive questions.
+
+RESUME LIBRARY:
+{resume_library}
+
+{discovery_section}TARGET JOB DESCRIPTION:
+---
+{jd_text}
+---
+
+Execute the full skill workflow (Library Parse → JD Analysis + Company Research → Template → Content Match → Generate).
+
+CRITICAL OUTPUT FORMAT — Your ENTIRE response must use these exact delimiters and contain NOTHING else:
+
+<<RESUME_START>>
+(the full tailored resume in Markdown goes here)
+<<RESUME_END>>
+
+<<REPORT_START>>
+(the full match analysis report in Markdown goes here)
+<<REPORT_END>>
+
+Do NOT output any commentary, preamble, summary, or text outside these delimiters. The output is parsed programmatically.
+
+Begin now."""
+
+
+# ---------------------------------------------------------------------------
+# Prompts (legacy — kept for cover letter which is separate from the skill)
 # ---------------------------------------------------------------------------
 def build_resume_prompt(base_resume: str, jd_text: str, candidate_name: str) -> str:
     return f"""You are an expert resume writer specializing in ATS optimization and strategic keyword matching for senior Scrum Master and Product Manager roles.
@@ -286,8 +459,10 @@ Output the full report in Markdown now:"""
 # ---------------------------------------------------------------------------
 # Process a single JD
 # ---------------------------------------------------------------------------
-def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = False, cover_letter_voice: str = "") -> bool:
-    """Process a single JD file: generate tailored resume, cover letter, and report."""
+def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = False,
+               cover_letter_voice: str = "", resume_library: str = "",
+               discovery_notes: str = "", skill_prompt: str = "") -> bool:
+    """Process a single JD file: generate tailored resume + report (skill-based), then cover letter."""
     jd_text = jd_path.read_text(encoding="utf-8")
     candidate = config["candidate"]
     candidate_name = candidate["name"]
@@ -332,7 +507,7 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
     print(f"  JD file: {jd_path.name}")
 
     if dry_run:
-        print(f"  [DRY RUN] Would generate: resume, cover letter, report")
+        print(f"  [DRY RUN] Would generate: resume + report (skill-based), cover letter")
         return True
 
     # Create output directory
@@ -344,13 +519,23 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
     # Save JD copy to output
     (output_dir / "jd.md").write_text(jd_text, encoding="utf-8")
 
-    # Step 1: Tailored resume
-    print(f"  [1/3] Generating tailored resume...")
-    resume_prompt = build_resume_prompt(base_resume, jd_text, candidate_name)
-    tailored_resume = call_claude(resume_prompt)
-    if not tailored_resume:
+    # Step 1: Skill-based tailored resume + report (single call)
+    print(f"  [1/2] Generating tailored resume + report (skill-based)...")
+    prompt = build_skill_resume_prompt(resume_library, jd_text, candidate_name, discovery_notes)
+    raw_output = call_claude_with_skill(prompt, skill_prompt)
+
+    if not raw_output:
         print(f"  ERROR: Failed to generate tailored resume. Skipping.")
         return False
+
+    # Parse delimited output
+    tailored_resume = extract_between(raw_output, "<<RESUME_START>>", "<<RESUME_END>>")
+    report = extract_between(raw_output, "<<REPORT_START>>", "<<REPORT_END>>")
+
+    if not tailored_resume:
+        # Fallback: treat entire output as resume if markers not found
+        print(f"    WARNING: Resume markers not found in output, using full response as resume.")
+        tailored_resume = raw_output
 
     resume_md_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_Resume.md"
     resume_md_path.write_text(tailored_resume, encoding="utf-8")
@@ -361,27 +546,27 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
     md_to_docx(resume_md_path, docx_path)
     print(f"    Saved: {docx_path.name}")
 
-    # Step 2: Cover letter
-    print(f"  [2/3] Generating cover letter...")
-    cl_prompt = build_cover_letter_prompt(base_resume, jd_text, tailored_resume, candidate_name, company, role, cover_letter_voice)
-    cover_letter = call_claude(cl_prompt)
-    if cover_letter:
-        cl_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_CoverLetter.md"
-        cl_path.write_text(cover_letter, encoding="utf-8")
-        print(f"    Saved: {cl_path.name}")
-    else:
-        print(f"    WARNING: Cover letter generation failed.")
-
-    # Step 3: Match report
-    print(f"  [3/3] Generating match report...")
-    report_prompt = build_report_prompt(base_resume, jd_text, tailored_resume, company, role)
-    report = call_claude(report_prompt)
+    # Save report
     if report:
         report_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_Report.md"
         report_path.write_text(report, encoding="utf-8")
         print(f"    Saved: {report_path.name}")
     else:
-        print(f"    WARNING: Report generation failed.")
+        print(f"    WARNING: Report markers not found in output. Report not generated.")
+
+    # Step 2: Cover letter (separate call, uses all cover letter voice sources)
+    if cover_letter_voice:
+        print(f"  [2/2] Generating cover letter...")
+        cl_prompt = build_cover_letter_prompt(base_resume, jd_text, tailored_resume, candidate_name, company, role, cover_letter_voice)
+        cover_letter = call_claude(cl_prompt)
+        if cover_letter:
+            cl_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_CoverLetter.md"
+            cl_path.write_text(cover_letter, encoding="utf-8")
+            print(f"    Saved: {cl_path.name}")
+        else:
+            print(f"    WARNING: Cover letter generation failed.")
+    else:
+        print(f"  [2/2] Skipping cover letter — no cover letter voice reference available.")
 
     return True
 
@@ -412,21 +597,33 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
     config = load_config()
     state = load_tailor_state()
 
-    # Load base resume
-    base_resume_path = ROOT / config["candidate"]["base_resume"]
-    if not base_resume_path.exists():
-        print(f"ERROR: Base resume not found: {base_resume_path}")
-        sys.exit(1)
-    base_resume = base_resume_path.read_text(encoding="utf-8")
+    # Load autonomous skill (required — exits if missing)
+    skill_prompt = load_autonomous_skill()
 
-    # Load base cover letter for voice matching (optional)
-    cover_letter_voice = ""
-    cl_voice_file = config["candidate"].get("base_cover_letter")
-    if cl_voice_file:
-        cl_voice_path = ROOT / cl_voice_file
-        if cl_voice_path.exists():
-            cover_letter_voice = cl_voice_path.read_text(encoding="utf-8")
-            print(f"  Voice reference: {cl_voice_path.name}")
+    # Load resume library (all sources from resumes/ directory)
+    resume_library = load_resume_library(config)
+    if not resume_library:
+        print(f"ERROR: No resume content found. Add resumes to {ROOT / 'resumes'}/")
+        print(f"Resume tailoring requires at least one real resume source.")
+        sys.exit(1)
+
+    # Load base resume for backward compat (used in cover letter prompt)
+    base_resume_path = ROOT / config["candidate"].get("base_resume", "base_resume.md")
+    base_resume = ""
+    if base_resume_path.exists():
+        base_resume = base_resume_path.read_text(encoding="utf-8")
+
+    # Load cover letter voice from all sources
+    cover_letter_voice = load_cover_letter_library(config)
+    if not cover_letter_voice:
+        print(f"  NOTE: No cover letter voice reference found. Cover letters will be skipped.")
+
+    # Load discovery notes (optional supplement)
+    discovery_notes = ""
+    discovery_path = ROOT / "discovery_notes.md"
+    if discovery_path.exists():
+        discovery_notes = discovery_path.read_text(encoding="utf-8")
+        print(f"  Discovery notes: {discovery_path.name} ({len(discovery_notes)} chars)")
 
     # Find unprocessed JDs
     jd_dir = ROOT / config["output"]["jd_directory"]
@@ -435,8 +632,7 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
     if limit:
         unprocessed = unprocessed[:limit]
 
-    print(f"\n  Base resume: {base_resume_path.name}")
-    print(f"  JDs to process: {len(unprocessed)}")
+    print(f"\n  JDs to process: {len(unprocessed)}")
     if not unprocessed:
         print("\n  No new JDs to tailor. Run fetcher.py first or use --jd to specify a pattern.")
         return
@@ -449,7 +645,11 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
     failed = 0
     for i, jd_path in enumerate(unprocessed, 1):
         print(f"  [{i}/{len(unprocessed)}]", end="")
-        ok = process_jd(jd_path, base_resume, config, dry_run=dry_run, cover_letter_voice=cover_letter_voice)
+        ok = process_jd(jd_path, base_resume, config, dry_run=dry_run,
+                        cover_letter_voice=cover_letter_voice,
+                        resume_library=resume_library,
+                        discovery_notes=discovery_notes,
+                        skill_prompt=skill_prompt)
 
         if ok and not dry_run:
             state["tailored"][jd_path.name] = {

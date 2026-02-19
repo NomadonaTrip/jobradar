@@ -3,6 +3,8 @@
 let currentStep = 0;
 const totalSteps = 6;
 const tags = { roles: [], locations: [], exclude: [] };
+let resumeFileData = "";
+let resumeFileName = "";
 
 // ── Navigation ──
 
@@ -96,6 +98,20 @@ function handleFileUpload(input) {
         document.getElementById("resumeText").value = e.target.result;
       };
       reader.readAsText(file);
+      resumeFileData = "";
+      resumeFileName = "";
+    } else if (
+      file.name.endsWith(".pdf") ||
+      file.name.endsWith(".docx") ||
+      file.name.endsWith(".doc")
+    ) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target.result;
+        resumeFileData = dataUrl.split(",")[1];
+        resumeFileName = file.name;
+      };
+      reader.readAsDataURL(file);
     }
   }
 }
@@ -155,7 +171,7 @@ function buildReview() {
 
   html += `<div class="review-section">
       <h3>Resume</h3>
-      <div class="review-row"><span class="rlabel">Content</span><span class="rvalue">${data.resumeText ? data.resumeText.substring(0, 100) + "..." : "File uploaded"}</span></div>
+      <div class="review-row"><span class="rlabel">Content</span><span class="rvalue">${data.resumeText ? data.resumeText.substring(0, 100) + "..." : data.resumeFileData ? "File uploaded: " + data.resumeFileName : "Not provided"}</span></div>
       <div class="review-row"><span class="rlabel">Cover Letter</span><span class="rvalue">${data.coverLetterText ? data.coverLetterText.substring(0, 100) + "..." : "Not provided"}</span></div>
   </div>`;
 
@@ -191,7 +207,8 @@ function gatherData() {
     location: document.getElementById("location").value.trim(),
     linkedin: document.getElementById("linkedin").value.trim(),
     resumeText: document.getElementById("resumeText").value.trim(),
-    resumeFile: document.getElementById("resumeFile").files[0]?.name || "",
+    resumeFileName: resumeFileName,
+    resumeFileData: resumeFileData,
     coverLetterText: document.getElementById("coverLetterText").value.trim(),
     roles: tags.roles,
     locations: tags.locations,

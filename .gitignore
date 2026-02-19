@@ -55,3 +55,6 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# jobRadar360 service account json file:
+jobradar-pipeline-923c12d1a8db.json

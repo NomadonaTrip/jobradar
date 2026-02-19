@@ -2,13 +2,13 @@
 """
 Auto-Import — polls Google Drive for new onboarding submissions.
 
-Reads JSON files from the 'Onboarding_Inbox' Drive folder, imports each
+Reads JSON files from the 'jobRadar_Inbox' Drive folder, imports each
 customer via manage.do_import(), then moves the file to 'Onboarding_Processed'.
 
 Requires:
     - Google Cloud service account with Drive API enabled
     - service_account.json in project root
-    - Onboarding_Inbox folder shared with the service account email
+    - jobRadar_Inbox folder shared with the service account email
 
 Usage:
     python auto_import.py              # import all pending submissions
@@ -29,8 +29,8 @@ ROOT = Path(__file__).resolve().parent
 SERVICE_ACCOUNT_FILE = ROOT / "service_account.json"
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-INBOX_FOLDER = "Onboarding_Inbox"
-PROCESSED_FOLDER = "Onboarding_Processed"
+INBOX_FOLDER = "jobRadar_Inbox"
+PROCESSED_FOLDER = "jobRadar_Processed"
 
 
 def get_drive_service():

@@ -2,6 +2,8 @@
 # Daily pipeline runner — called by cron (WSL2) or Windows Task Scheduler
 set -euo pipefail
 
+export PATH="/home/nomad/.local/bin:${PATH}"
+
 PROJECT_DIR="/mnt/e/TOOLMAKER/AUTOMATIONS/RESUME_GEN"
 PYTHON="${PROJECT_DIR}/.venv/bin/python"
 LOG="${PROJECT_DIR}/pipeline.log"

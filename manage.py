@@ -12,7 +12,9 @@ Usage:
 """
 
 import argparse
+import base64
 import json
+import io
 import os
 import re
 import shutil
@@ -54,26 +56,76 @@ def do_import(data: dict, force: bool = False) -> Path:
 
     customer_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save raw onboarding data
+    # Decode and save binary resume file if present
+    resume_file_data = data.get("resumeFileData", "")
+    resume_file_name = data.get("resumeFileName", "") or data.get("resumeFile", "")
+    if resume_file_data and resume_file_name:
+        try:
+            raw_bytes = base64.b64decode(resume_file_data)
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", resume_file_name)
+            (customer_dir / safe_name).write_bytes(raw_bytes)
+            print(f"  Saved resume file: {safe_name} ({len(raw_bytes)} bytes)")
+        except Exception as e:
+            print(f"  WARNING: Could not decode/save binary resume: {e}")
+
+    # Save raw onboarding data (strip base64 to keep JSON small)
+    data_to_save = {k: v for k, v in data.items() if k not in ("resumeFileData", "coverLetterFileData")}
     (customer_dir / "onboarding.json").write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(data_to_save, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    # Generate base resume from onboarding data
-    resume_md = build_resume_from_onboarding(data)
-    (customer_dir / "base_resume.md").write_text(resume_md, encoding="utf-8")
+    # Build resume library — store ALL sources, not just one
+    resume_library = build_resume_library(data, customer_dir)
+    resumes_dir = customer_dir / "resumes"
+    resumes_dir.mkdir(exist_ok=True)
+    for filename, content in resume_library.items():
+        (resumes_dir / filename).write_text(content, encoding="utf-8")
+        print(f"  Saved resume source: resumes/{filename} ({len(content)} chars)")
 
-    # Save base cover letter if provided (used for voice matching in tailoring)
-    cover_letter_text = data.get("coverLetterText", "")
-    if cover_letter_text:
-        (customer_dir / "base_cover_letter.md").write_text(cover_letter_text, encoding="utf-8")
+    if not resume_library:
+        print(f"  ALERT: No resume data provided (neither pasted nor uploaded).")
+        print(f"  Resume tailoring will not work for this customer until a resume is added.")
+
+    # Keep base_resume.md at root for backward compatibility
+    best_resume = resume_library.get("pasted_resume.md") or next(iter(resume_library.values()), "")
+    if best_resume:
+        (customer_dir / "base_resume.md").write_text(best_resume, encoding="utf-8")
+
+    # Decode and save binary cover letter file if present
+    cl_file_data = data.get("coverLetterFileData", "")
+    cl_file_name = data.get("coverLetterFileName", "") or data.get("coverLetterFile", "")
+    if cl_file_data and cl_file_name:
+        try:
+            cl_raw_bytes = base64.b64decode(cl_file_data)
+            cl_safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", cl_file_name)
+            (customer_dir / cl_safe_name).write_bytes(cl_raw_bytes)
+            print(f"  Saved cover letter file: {cl_safe_name} ({len(cl_raw_bytes)} bytes)")
+        except Exception as e:
+            print(f"  WARNING: Could not decode/save binary cover letter: {e}")
+
+    # Build cover letter library — store ALL sources
+    cl_library = build_cover_letter_library(data, customer_dir)
+    cl_dir = customer_dir / "cover_letters"
+    cl_dir.mkdir(exist_ok=True)
+    for filename, content in cl_library.items():
+        (cl_dir / filename).write_text(content, encoding="utf-8")
+        print(f"  Saved cover letter source: cover_letters/{filename} ({len(content)} chars)")
+
+    if not cl_library:
+        print(f"  ALERT: No cover letter data provided (neither pasted nor uploaded).")
+        print(f"  Cover letter generation will be skipped for this customer.")
+
+    # Keep base_cover_letter.md at root for backward compatibility
+    best_cl = cl_library.get("pasted_cover_letter.md") or next(iter(cl_library.values()), "")
+    if best_cl:
+        (customer_dir / "base_cover_letter.md").write_text(best_cl, encoding="utf-8")
 
     # Generate customer config
     config = build_customer_config(data, slug)
     with open(customer_dir / "config.yaml", "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
-    # Create subdirectories
+    # Create subdirectories (resumes/ and cover_letters/ already created above)
     (customer_dir / "JDs").mkdir(exist_ok=True)
     (customer_dir / "output").mkdir(exist_ok=True)
 
@@ -120,47 +172,255 @@ def cmd_import(args):
     print(f"\n  Next: python manage.py run {slug}")
 
 
-def build_resume_from_onboarding(data: dict) -> str:
-    """Build a base resume markdown from onboarding data."""
+def _extract_text_from_pdf(file_bytes: bytes) -> str:
+    """Extract plain text from a PDF resume using pdfplumber."""
+    try:
+        import pdfplumber
+    except ImportError:
+        print("  WARNING: pdfplumber not installed. Run: pip install pdfplumber")
+        return ""
+    text_parts = []
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+    except Exception as e:
+        print(f"  WARNING: PDF text extraction failed: {e}")
+        return ""
+    return "\n\n".join(text_parts)
+
+
+def _extract_text_from_docx(file_bytes: bytes) -> str:
+    """Extract plain text from a DOCX resume using python-docx."""
+    try:
+        from docx import Document
+    except ImportError:
+        print("  WARNING: python-docx not installed.")
+        return ""
+    text_parts = []
+    try:
+        doc = Document(io.BytesIO(file_bytes))
+        for para in doc.paragraphs:
+            if para.text.strip():
+                text_parts.append(para.text)
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(
+                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                )
+                if row_text:
+                    text_parts.append(row_text)
+    except Exception as e:
+        print(f"  WARNING: DOCX text extraction failed: {e}")
+        return ""
+    return "\n".join(text_parts)
+
+
+def _extract_file_text(file_name: str, file_data_b64: str, customer_dir: Path = None) -> str:
+    """Extract text from an uploaded file (PDF/DOCX/TXT). Returns empty string on failure."""
+    if not file_name:
+        return ""
+    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    file_bytes = None
+
+    if file_data_b64:
+        try:
+            file_bytes = base64.b64decode(file_data_b64)
+        except Exception as e:
+            print(f"  WARNING: base64 decode failed for {file_name}: {e}")
+
+    if file_bytes is None and customer_dir is not None:
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", file_name)
+        disk_path = customer_dir / safe_name
+        if disk_path.exists():
+            file_bytes = disk_path.read_bytes()
+
+    if file_bytes is None:
+        return ""
+
+    if ext == "pdf":
+        return _extract_text_from_pdf(file_bytes)
+    elif ext in ("docx", "doc"):
+        return _extract_text_from_docx(file_bytes)
+    elif ext in ("txt", "md"):
+        try:
+            return file_bytes.decode("utf-8")
+        except Exception:
+            return ""
+    return ""
+
+
+def build_resume_library(data: dict, customer_dir: Path = None) -> dict[str, str]:
+    """Build a resume library from ALL onboarding sources.
+
+    Returns a dict of {filename: content} for each source that has content.
+    Returns empty dict if neither pasted text nor uploaded file exists.
+    """
+    library = {}
+
+    # Source 1: Pasted text
+    pasted = data.get("resumeText", "").strip()
+    if pasted:
+        library["pasted_resume.md"] = pasted
+
+    # Source 2: Uploaded file (extract text)
+    file_name = data.get("resumeFileName", "") or data.get("resumeFile", "")
+    file_data = data.get("resumeFileData", "")
+    extracted = _extract_file_text(file_name, file_data, customer_dir).strip()
+    if extracted:
+        library["uploaded_resume.md"] = extracted
+        print(f"  Extracted {len(extracted)} chars from resume file: {file_name}")
+
+    # Source 3: Discovery supplement (only if we have at least one real resume)
+    if library:
+        discovery = data.get("discovery", {})
+        if discovery and any(v.strip() for v in discovery.values() if isinstance(v, str)):
+            supplement = _build_discovery_supplement(data)
+            if supplement.strip():
+                library["discovery_supplement.md"] = supplement
+
+    return library
+
+
+def _build_discovery_supplement(data: dict) -> str:
+    """Build a discovery supplement from onboarding answers. Not a standalone resume."""
+    discovery = data.get("discovery", {})
+    name = f"{data.get('firstName', '')} {data.get('lastName', '')}".strip()
+    parts = [f"# Discovery Supplement: {name}\n"]
+
+    if discovery.get("teamSize"):
+        parts.append(f"## Leadership Scale\n{discovery['teamSize']}\n")
+    if discovery.get("budget"):
+        parts.append(f"## Largest Budget/Project\n{discovery['budget']}\n")
+    if discovery.get("metrics"):
+        parts.append(f"## Key Metrics & Improvements\n{discovery['metrics']}\n")
+    if discovery.get("certs"):
+        parts.append(f"## Certifications\n{discovery['certs']}\n")
+    if discovery.get("challenge"):
+        parts.append(f"## Notable Challenge Overcome\n{discovery['challenge']}\n")
+    if discovery.get("tools"):
+        parts.append(f"## Tools & Technologies\n{discovery['tools']}\n")
+    if discovery.get("industries"):
+        parts.append(f"## Industries\n{discovery['industries']}\n")
+    if discovery.get("hidden"):
+        parts.append(f"## Underrepresented Experience\n{discovery['hidden']}\n")
+
+    return "\n".join(parts)
+
+
+def build_cover_letter_library(data: dict, customer_dir: Path = None) -> dict[str, str]:
+    """Build a cover letter library from ALL onboarding sources.
+
+    Returns a dict of {filename: content}. Empty dict if neither source exists.
+    """
+    library = {}
+
+    # Source 1: Pasted text
+    pasted = data.get("coverLetterText", "").strip()
+    if pasted:
+        library["pasted_cover_letter.md"] = pasted
+
+    # Source 2: Uploaded file (extract text)
+    file_name = data.get("coverLetterFileName", "") or data.get("coverLetterFile", "")
+    file_data = data.get("coverLetterFileData", "")
+    extracted = _extract_file_text(file_name, file_data, customer_dir).strip()
+    if extracted:
+        library["uploaded_cover_letter.md"] = extracted
+        print(f"  Extracted {len(extracted)} chars from cover letter file: {file_name}")
+
+    return library
+
+
+def build_resume_from_onboarding(data: dict, customer_dir: Path = None) -> str:
+    """Build a base resume markdown from onboarding data.
+
+    DEPRECATED — use build_resume_library() instead. Kept for backward compatibility.
+    Now alerts operator instead of building a skeleton when no resume data exists.
+    """
+    # Priority 1: pasted text
     resume = data.get("resumeText", "")
     if resume:
         return resume
 
-    # If no pasted resume, build a skeleton from discovery data
+    # Priority 2: extract text from uploaded binary file
+    resume_file_name = data.get("resumeFileName", "") or data.get("resumeFile", "")
+    resume_file_data = data.get("resumeFileData", "")
+    if resume_file_name:
+        ext = resume_file_name.rsplit(".", 1)[-1].lower() if "." in resume_file_name else ""
+        file_bytes = None
+
+        if resume_file_data:
+            try:
+                file_bytes = base64.b64decode(resume_file_data)
+            except Exception as e:
+                print(f"  WARNING: base64 decode failed: {e}")
+
+        if file_bytes is None and customer_dir is not None:
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", resume_file_name)
+            disk_path = customer_dir / safe_name
+            if disk_path.exists():
+                file_bytes = disk_path.read_bytes()
+
+        if file_bytes is not None:
+            extracted = ""
+            if ext == "pdf":
+                extracted = _extract_text_from_pdf(file_bytes)
+            elif ext in ("docx", "doc"):
+                extracted = _extract_text_from_docx(file_bytes)
+            if extracted.strip():
+                print(f"  Extracted {len(extracted)} chars from {resume_file_name}")
+                return extracted
+
+    # No resume data available — alert operator instead of building a skeleton
     name = f"{data['firstName']} {data['lastName']}"
-    discovery = data.get("discovery", {})
+    print(f"  ALERT: No resume data found for {name} (neither pasted text nor uploaded file).")
+    print(f"  A real resume is required for tailoring. Discovery data alone is insufficient.")
+    return ""
 
-    md = f"# {name}\n\n"
-    md += f"**{data.get('location', '')}** | {data.get('email', '')} | {data.get('phone', '')}"
-    if data.get("linkedin"):
-        md += f" | [{data['linkedin']}]({data['linkedin']})"
-    md += "\n\n---\n\n"
 
-    md += "## Professional Summary\n\n"
-    md += f"[To be refined based on discovery data]\n\n"
+def build_cover_letter_from_onboarding(data: dict, customer_dir: Path = None) -> str:
+    """Build a base cover letter from onboarding data.
 
-    if discovery.get("certs"):
-        md += f"## Certifications\n\n{discovery['certs']}\n\n"
+    Priority 1: pasted text, Priority 2: extract from uploaded binary file.
+    Returns empty string if neither is available.
+    """
+    # Priority 1: pasted text
+    cover_letter = data.get("coverLetterText", "")
+    if cover_letter:
+        return cover_letter
 
-    if discovery.get("tools"):
-        md += f"## Key Skills\n\n{discovery['tools']}\n\n"
+    # Priority 2: extract text from uploaded binary file
+    cl_file_name = data.get("coverLetterFileName", "") or data.get("coverLetterFile", "")
+    cl_file_data = data.get("coverLetterFileData", "")
+    if cl_file_name:
+        ext = cl_file_name.rsplit(".", 1)[-1].lower() if "." in cl_file_name else ""
+        file_bytes = None
 
-    md += "## Professional Experience\n\n"
-    md += "[Experience details to be extracted from uploaded resume file]\n\n"
+        if cl_file_data:
+            try:
+                file_bytes = base64.b64decode(cl_file_data)
+            except Exception as e:
+                print(f"  WARNING: cover letter base64 decode failed: {e}")
 
-    if discovery.get("metrics"):
-        md += "## Key Achievements\n\n"
-        for line in discovery["metrics"].split("\n"):
-            line = line.strip()
-            if line:
-                if not line.startswith("-"):
-                    line = f"- {line}"
-                md += f"{line}\n"
-        md += "\n"
+        if file_bytes is None and customer_dir is not None:
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", cl_file_name)
+            disk_path = customer_dir / safe_name
+            if disk_path.exists():
+                file_bytes = disk_path.read_bytes()
 
-    md += "## Education\n\n[To be filled from resume]\n"
+        if file_bytes is not None:
+            extracted = ""
+            if ext == "pdf":
+                extracted = _extract_text_from_pdf(file_bytes)
+            elif ext in ("docx", "doc"):
+                extracted = _extract_text_from_docx(file_bytes)
+            if extracted.strip():
+                print(f"  Extracted {len(extracted)} chars from cover letter {cl_file_name}")
+                return extracted
 
-    return md
+    return ""
 
 
 def build_customer_config(data: dict, slug: str) -> dict:
@@ -188,7 +448,9 @@ def build_customer_config(data: dict, slug: str) -> dict:
             "location": data.get("location", ""),
             "email": data.get("email", ""),
             "base_resume": "base_resume.md",
+            "resume_library": "resumes/",
             "base_cover_letter": "base_cover_letter.md",
+            "cover_letter_library": "cover_letters/",
         },
         "search": {
             "queries": data.get("roles", ["Scrum Master", "Product Manager"]),
@@ -510,6 +772,210 @@ def cmd_renew(args):
 
 
 # ---------------------------------------------------------------------------
+# Recover files
+# ---------------------------------------------------------------------------
+def recover_from_local(cdir: Path, file_path: Path, file_type: str = "resume"):
+    """Recover a binary file from a local path into the customer's library."""
+    if not file_path.exists():
+        print(f"  ERROR: File not found: {file_path}")
+        sys.exit(1)
+
+    # Copy binary to customer dir
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", file_path.name)
+    dest = cdir / safe_name
+    shutil.copy2(file_path, dest)
+    print(f"  Saved binary file: {safe_name} ({dest.stat().st_size} bytes)")
+
+    # Extract text
+    file_bytes = dest.read_bytes()
+    file_data_b64 = base64.b64encode(file_bytes).decode("ascii")
+    extracted = _extract_file_text(safe_name, file_data_b64, cdir).strip()
+
+    if not extracted:
+        print(f"  WARNING: Could not extract text from {safe_name}")
+        return
+
+    # Save to library
+    if file_type == "resume":
+        lib_dir = cdir / "resumes"
+        lib_dir.mkdir(exist_ok=True)
+        lib_file = lib_dir / "uploaded_resume.md"
+        lib_file.write_text(extracted, encoding="utf-8")
+        print(f"  Saved: resumes/uploaded_resume.md ({len(extracted)} chars)")
+    elif file_type == "cover_letter":
+        lib_dir = cdir / "cover_letters"
+        lib_dir.mkdir(exist_ok=True)
+        lib_file = lib_dir / "uploaded_cover_letter.md"
+        lib_file.write_text(extracted, encoding="utf-8")
+        print(f"  Saved: cover_letters/uploaded_cover_letter.md ({len(extracted)} chars)")
+
+
+def recover_from_drive(cdir: Path, data: dict):
+    """Search Google Drive for binary resume/cover letter files for this customer."""
+    try:
+        from auto_import import get_drive_service, find_folder
+    except ImportError:
+        print("  ERROR: Could not import auto_import module.")
+        print("  Make sure auto_import.py is in the project root and google-api-python-client is installed.")
+        return
+
+    first = data.get("firstName", "")
+    last = data.get("lastName", "")
+    if not first or not last:
+        print("  ERROR: onboarding.json missing firstName/lastName.")
+        return
+
+    print(f"  Searching Google Drive for files matching: *{first}_{last}*")
+    service = get_drive_service()
+
+    folders_to_search = [
+        "jobRadar_Inbox", "jobRadar_Processed",
+        "Onboarding_Inbox", "Onboarding_Processed",
+    ]
+
+    found_any = False
+    for folder_name in folders_to_search:
+        folder_id = find_folder(service, folder_name)
+        if not folder_id:
+            continue
+
+        for prefix, file_type in [("resume_", "resume"), ("cover_letter_", "cover_letter")]:
+            query = (
+                f"'{folder_id}' in parents "
+                f"and name contains '{prefix}{first}_{last}' "
+                f"and trashed = false"
+            )
+            resp = service.files().list(
+                q=query, spaces="drive",
+                fields="files(id, name, mimeType, size)"
+            ).execute()
+
+            for f in resp.get("files", []):
+                found_any = True
+                print(f"  Found: {f['name']} in {folder_name}/ ({f.get('size', '?')} bytes)")
+
+                # Download binary
+                import io
+                from googleapiclient.http import MediaIoBaseDownload
+                request = service.files().get_media(fileId=f["id"])
+                buffer = io.BytesIO()
+                downloader = MediaIoBaseDownload(buffer, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                buffer.seek(0)
+                file_bytes = buffer.read()
+
+                # Save binary
+                safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", f["name"])
+                (cdir / safe_name).write_bytes(file_bytes)
+                print(f"  Downloaded: {safe_name} ({len(file_bytes)} bytes)")
+
+                # Extract text and save to library
+                file_data_b64 = base64.b64encode(file_bytes).decode("ascii")
+                extracted = _extract_file_text(safe_name, file_data_b64, cdir).strip()
+                if extracted:
+                    if file_type == "resume":
+                        lib_dir = cdir / "resumes"
+                        lib_dir.mkdir(exist_ok=True)
+                        (lib_dir / "uploaded_resume.md").write_text(extracted, encoding="utf-8")
+                        print(f"  Extracted: resumes/uploaded_resume.md ({len(extracted)} chars)")
+                    elif file_type == "cover_letter":
+                        lib_dir = cdir / "cover_letters"
+                        lib_dir.mkdir(exist_ok=True)
+                        (lib_dir / "uploaded_cover_letter.md").write_text(extracted, encoding="utf-8")
+                        print(f"  Extracted: cover_letters/uploaded_cover_letter.md ({len(extracted)} chars)")
+                else:
+                    print(f"  WARNING: Could not extract text from {safe_name}")
+
+    # Also check for full onboarding JSON with base64 data
+    for folder_name in folders_to_search:
+        folder_id = find_folder(service, folder_name)
+        if not folder_id:
+            continue
+        query = (
+            f"'{folder_id}' in parents "
+            f"and name contains 'onboarding_{first}_{last}' "
+            f"and mimeType = 'application/json' "
+            f"and trashed = false"
+        )
+        resp = service.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name)"
+        ).execute()
+        for f in resp.get("files", []):
+            print(f"  Found JSON: {f['name']} in {folder_name}/")
+            import io
+            from googleapiclient.http import MediaIoBaseDownload
+            request = service.files().get_media(fileId=f["id"])
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            buffer.seek(0)
+            full_data = json.loads(buffer.read().decode("utf-8"))
+
+            # Check if it has base64 resume data
+            if full_data.get("resumeFileData"):
+                found_any = True
+                fname = full_data.get("resumeFileName", "") or full_data.get("resumeFile", "")
+                print(f"  JSON contains resumeFileData for: {fname}")
+                extracted = _extract_file_text(
+                    fname, full_data["resumeFileData"], cdir
+                ).strip()
+                if extracted:
+                    lib_dir = cdir / "resumes"
+                    lib_dir.mkdir(exist_ok=True)
+                    (lib_dir / "uploaded_resume.md").write_text(extracted, encoding="utf-8")
+                    print(f"  Extracted: resumes/uploaded_resume.md ({len(extracted)} chars)")
+
+            if full_data.get("coverLetterFileData"):
+                found_any = True
+                fname = full_data.get("coverLetterFileName", "") or full_data.get("coverLetterFile", "")
+                print(f"  JSON contains coverLetterFileData for: {fname}")
+                extracted = _extract_file_text(
+                    fname, full_data["coverLetterFileData"], cdir
+                ).strip()
+                if extracted:
+                    lib_dir = cdir / "cover_letters"
+                    lib_dir.mkdir(exist_ok=True)
+                    (lib_dir / "uploaded_cover_letter.md").write_text(extracted, encoding="utf-8")
+                    print(f"  Extracted: cover_letters/uploaded_cover_letter.md ({len(extracted)} chars)")
+
+    if not found_any:
+        print(f"  No binary files found on Google Drive for {first} {last}.")
+        print(f"  The file must be obtained from the customer directly.")
+        print(f"  Once you have the file, run:")
+        print(f"    python manage.py recover-files {cdir.name} --file /path/to/file.docx")
+
+
+def cmd_recover(args):
+    """Recover binary resume/cover letter files for a customer."""
+    slug = args.customer
+    cdir = CUSTOMERS_DIR / slug
+    if not cdir.exists():
+        print(f"  ERROR: Customer '{slug}' not found.")
+        sys.exit(1)
+
+    onboarding_path = cdir / "onboarding.json"
+    if not onboarding_path.exists():
+        print(f"  ERROR: No onboarding.json found for {slug}.")
+        sys.exit(1)
+    data = json.loads(onboarding_path.read_text(encoding="utf-8"))
+
+    print(f"\n  Recovering files for: {data.get('firstName', '')} {data.get('lastName', '')}")
+    print(f"  Customer directory: {cdir}\n")
+
+    if args.file:
+        recover_from_local(cdir, Path(args.file), args.type)
+    else:
+        recover_from_drive(cdir, data)
+
+    print()
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main():
@@ -548,6 +1014,13 @@ def main():
     p_renew.add_argument("customer", help="Customer slug")
     p_renew.add_argument("--days", type=int, default=20, help="Days to extend (default: 20)")
 
+    # recover-files
+    p_recover = subparsers.add_parser("recover-files", help="Recover binary files for a customer")
+    p_recover.add_argument("customer", help="Customer slug")
+    p_recover.add_argument("--file", type=str, help="Local file path to recover from")
+    p_recover.add_argument("--type", choices=["resume", "cover_letter"], default="resume",
+                           help="File type (default: resume)")
+
     args = parser.parse_args()
 
     if args.command == "import":
@@ -562,6 +1035,8 @@ def main():
         cmd_run_all(args)
     elif args.command == "renew":
         cmd_renew(args)
+    elif args.command == "recover-files":
+        cmd_recover(args)
     else:
         parser.print_help()
 

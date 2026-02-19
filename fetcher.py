@@ -143,6 +143,12 @@ def matches_filters(job: dict, filters: dict, candidate_province: str = "") -> b
         if job_sal and job_sal < min_sal:
             return False
 
+    # Exclude domains in apply URL
+    apply_url = job.get("apply_url", "").lower()
+    for domain in filters.get("exclude_domains", []):
+        if domain.lower() in apply_url:
+            return False
+
     # Province filter — reject out-of-province jobs unless fully remote
     if candidate_province and not _job_is_remote(job):
         job_location = job.get("location", "")

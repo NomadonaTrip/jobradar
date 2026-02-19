@@ -51,6 +51,7 @@ No test framework or linter is configured.
 ### Multi-Tenant Customer Model
 
 `manage.py` handles customer lifecycle. Each customer lives in `customers/{slug}/` with:
+
 - `config.yaml` — search queries, API keys, notification settings, lifecycle dates
 - `base_resume.md` — master resume from onboarding
 - `base_cover_letter.md` — optional voice sample for cover letter generation
@@ -59,6 +60,7 @@ No test framework or linter is configured.
 - `state.json`, `tailor_state.json`, `notify_state.json` — phase tracking
 
 Scripts detect their working directory via `PIPELINE_WORKDIR` env var (set by `manage.py`) or fall back to the repo root:
+
 ```python
 ROOT = Path(os.environ["PIPELINE_WORKDIR"]) if "PIPELINE_WORKDIR" in os.environ else Path(__file__).resolve().parent
 ```
@@ -70,9 +72,11 @@ ROOT = Path(os.environ["PIPELINE_WORKDIR"]) if "PIPELINE_WORKDIR" in os.environ 
 ### Claude AI Integration
 
 `tailor.py` calls Claude via subprocess:
+
 ```
 claude -p <prompt> --model sonnet --no-session-persistence --output-format text
 ```
+
 - 5-minute timeout per call, max 2 retries
 - Three separate prompts: resume tailoring, cover letter, match report
 - Cover letter prompt uses candidate's base cover letter (if provided) as a voice reference
@@ -98,3 +102,12 @@ Missing API keys skip that source. Rate limits (429) trigger backoff. Missing py
 - Per-customer `config.yaml` in `customers/{slug}/` overrides search, notification, and lifecycle settings
 - `service_account.json` required for Google Drive auto-import (not in repo)
 - `.claude/settings.local.json` defines Claude CLI permission sandbox
+
+## Memory Management
+
+When you discover or establish something that would be valuable in future sessions — architectural decisions, bug fixes, gotchas, patterns, environment quirks —
+immediately append it to .claude/MEMORY.md
+
+Don't wait for me to ask. Don't wait for session end.
+
+Keep entries short: date, what, why. Read this file at the start of every session.
