@@ -30,6 +30,112 @@ from pathlib import Path
 import yaml
 
 # ---------------------------------------------------------------------------
+# AI Cliche Cleanup — Post-processing layer
+# ---------------------------------------------------------------------------
+
+# Each stem maps morphological forms to cleaner replacements.
+# The sanitize function handles case preservation automatically.
+BANNED_WORD_MAP = {
+    "leverage":     {"leveraged": "used", "leveraging": "using", "leverages": "uses", "leverage": "use"},
+    "utilize":      {"utilized": "used", "utilizing": "using", "utilizes": "uses", "utilize": "use"},
+    "spearhead":    {"spearheaded": "led", "spearheading": "leading", "spearheads": "leads", "spearhead": "lead"},
+    "facilitate":   {"facilitated": "coordinated", "facilitating": "coordinating", "facilitates": "coordinates", "facilitate": "coordinate"},
+    "foster":       {"fostered": "built", "fostering": "building", "fosters": "builds", "foster": "build"},
+    "cultivate":    {"cultivated": "developed", "cultivating": "developing", "cultivates": "develops", "cultivate": "develop"},
+    "harness":      {"harnessed": "used", "harnessing": "using", "harnesses": "uses", "harness": "use"},
+    "champion":     {"championed": "led", "championing": "leading", "champions": "leads", "champion": "lead"},
+    "seamless":     {"seamlessly": "smoothly", "seamless": "smooth"},
+    "robust":       {"robust": "strong"},
+    "holistic":     {"holistically": "comprehensively", "holistic": "comprehensive"},
+    "cutting-edge": {"cutting-edge": "modern"},
+    "best-in-class":{"best-in-class": "leading"},
+    "synergy":      {"synergies": "collaboration", "synergy": "collaboration"},
+    "paradigm":     {"paradigms": "approaches", "paradigm": "approach"},
+}
+
+# Phrases to strip entirely or replace. Format: (regex_pattern, replacement).
+BANNED_PHRASES = [
+    (r"I am writing to express my (?:strong |keen )?interest in", "I am applying for"),
+    (r"resonates deeply with", "matches"),
+    (r"aligns perfectly with", "matches"),
+    (r"I am (?:excited|thrilled|eager) (?:about|by) the opportunity to", "I look forward to"),
+    (r"I would welcome the (?:opportunity|chance) to discuss", "I am happy to discuss"),
+    (r"(?:a |the )?culture of (\w+)", r"\1"),
+    (r"in today'?s (?:\w+ )*?landscape", ""),
+    (r"at the forefront of", ""),
+    (r"(?:deep|strong) (?:understanding|passion) (?:of|for)", "experience with"),
+    (r"actionable (insights?|recommendations?|deliverables?)", r"clear \1"),
+    (r"well-?versed in", "experienced with"),
+    (r"uniquely positioned to", "prepared to"),
+    (r"well-?positioned to", "prepared to"),
+]
+
+
+def _preserve_case(original: str, replacement: str) -> str:
+    """Apply the case pattern of *original* to *replacement*."""
+    if not original or not replacement:
+        return replacement
+    if original.isupper():
+        return replacement.upper()
+    if original[0].isupper() and (len(original) == 1 or original[1:].islower()):
+        return replacement[0].upper() + replacement[1:]
+    return replacement
+
+
+def sanitize_ai_output(text: str, context: str = "resume") -> str:
+    """Clean AI-generated text of cliche language patterns.
+
+    context:
+      "resume"       - full cleanup (word map + phrases + em-dashes)
+      "cover_letter" - full cleanup
+      "report"       - light cleanup (em-dashes + whitespace only)
+    """
+    if not text:
+        return text
+
+    # --- Em-dash cleanup (all contexts) ---
+    text = re.sub(r"^—\s*", "- ", text, flags=re.MULTILINE)  # list-item starter
+    text = text.replace(" — ", " - ")   # inline parenthetical with spaces
+    text = text.replace("— ", " - ")    # leading-space variant
+    text = text.replace(" —", " -")     # trailing variant
+    text = text.replace("—", " - ")     # bare em-dash fallback
+
+    # --- Word map replacements (resume and cover_letter only) ---
+    if context in ("resume", "cover_letter"):
+        for _stem, forms in BANNED_WORD_MAP.items():
+            for original_form, replacement_form in forms.items():
+                if "-" in original_form:
+                    pattern = re.compile(
+                        r"(?<![a-zA-Z])" + re.escape(original_form) + r"(?![a-zA-Z])",
+                        re.IGNORECASE,
+                    )
+                else:
+                    pattern = re.compile(
+                        r"\b" + re.escape(original_form) + r"\b",
+                        re.IGNORECASE,
+                    )
+
+                def _make_replacer(repl):
+                    def replacer(match):
+                        return _preserve_case(match.group(0), repl)
+                    return replacer
+
+                text = pattern.sub(_make_replacer(replacement_form), text)
+
+    # --- Phrase cleanup (resume and cover_letter only) ---
+    if context in ("resume", "cover_letter"):
+        for phrase_pattern, phrase_replacement in BANNED_PHRASES:
+            text = re.sub(phrase_pattern, phrase_replacement, text, flags=re.IGNORECASE)
+
+    # --- Whitespace normalization (all contexts) ---
+    text = re.sub(r"([^\n]) {2,}", r"\1 ", text)        # collapse multi-spaces
+    text = re.sub(r" +$", "", text, flags=re.MULTILINE)  # trim trailing spaces
+    text = re.sub(r"\n{4,}", "\n\n\n", text)             # collapse excess blank lines
+
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Paths & Config
 # ---------------------------------------------------------------------------
 ROOT = Path(os.environ["PIPELINE_WORKDIR"]) if "PIPELINE_WORKDIR" in os.environ else Path(__file__).resolve().parent
@@ -241,8 +347,67 @@ def load_cover_letter_library(config: dict) -> str:
     return ""
 
 
+def _extract_text_from_json_output(raw_json: str) -> str:
+    """Extract the best text content from claude JSON output.
+
+    When --output-format json is used with tool-enabled sessions, the response
+    contains the full conversation. The delimited resume/report may be in an
+    intermediate message (before the model's final summary). We scan all
+    assistant messages for the delimiters and return the first match.
+    Falls back to the final assistant message text if no delimiters found.
+    """
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return raw_json  # Not JSON, return as-is
+
+    # Handle the JSON response structure from claude CLI
+    # The result field contains the final text, but messages contains all turns
+    messages = data.get("messages", [])
+    result_text = data.get("result", "")
+
+    # Scan all assistant messages for delimiter markers (prefer the one with markers)
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        # content may be a string or a list of content blocks
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block["text"])
+            content = "\n".join(text_parts)
+        if "<<RESUME_START>>" in content:
+            return content
+
+    # No delimiters found in any message — fall back to result field
+    if result_text:
+        return result_text
+
+    # Last resort: concatenate all assistant text blocks
+    all_text = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    all_text.append(block["text"])
+        elif isinstance(content, str):
+            all_text.append(content)
+    return "\n".join(all_text) if all_text else raw_json
+
+
 def call_claude_with_skill(prompt: str, skill_prompt: str, max_retries: int = 2) -> str:
-    """Call claude CLI with the autonomous skill as a system prompt append."""
+    """Call claude CLI with the autonomous skill as a system prompt append.
+
+    Uses --output-format json to capture the full conversation including
+    intermediate messages from tool use (WebSearch). This ensures we can
+    extract the delimited resume/report even if the model's final message
+    is a summary.
+    """
     env = _clean_env()
     for attempt in range(max_retries + 1):
         try:
@@ -251,7 +416,7 @@ def call_claude_with_skill(prompt: str, skill_prompt: str, max_retries: int = 2)
                     "claude", "-p", prompt,
                     "--model", "sonnet",
                     "--no-session-persistence",
-                    "--output-format", "text",
+                    "--output-format", "json",
                     "--append-system-prompt", skill_prompt,
                     "--allowedTools", "WebSearch",
                     "--max-budget-usd", "2.00",
@@ -263,7 +428,7 @@ def call_claude_with_skill(prompt: str, skill_prompt: str, max_retries: int = 2)
                 env=env,
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                return _extract_text_from_json_output(result.stdout.strip())
             elif result.returncode != 0:
                 err = result.stderr.strip() or result.stdout.strip()
                 print(f"    [Skill] Attempt {attempt+1} failed (exit {result.returncode}): {err[:200]}")
@@ -303,7 +468,7 @@ DISCOVERY NOTES (candidate's self-reported achievements, metrics, and context fr
 """
     return f"""TASK: Tailor a resume for {candidate_name} using the autonomous pipeline skill methodology.
 
-MODE: EXPRESS / HEADLESS — Execute all phases automatically. No checkpoints. No interactive questions.
+MODE: EXPRESS / HEADLESS - Execute all phases automatically. No checkpoints. No interactive questions.
 
 RESUME LIBRARY:
 {resume_library}
@@ -313,9 +478,11 @@ RESUME LIBRARY:
 {jd_text}
 ---
 
-Execute the full skill workflow (Library Parse → JD Analysis + Company Research → Template → Content Match → Generate).
+Execute the full skill workflow (Library Parse -> JD Analysis + Company Research -> Template -> Content Match -> Generate).
 
-CRITICAL OUTPUT FORMAT — Your ENTIRE response must use these exact delimiters and contain NOTHING else:
+WRITING QUALITY REMINDER: Follow the anti-cliche rules in the skill prompt strictly. No em-dashes, no "leveraged", no "spearheaded", no "facilitated", no "seamless", no "actionable insights", no "foster a culture of". Use plain, strong resume verbs (led, built, delivered, managed, reduced, improved, designed, implemented). Vary sentence openings across bullets.
+
+CRITICAL OUTPUT FORMAT - Your ENTIRE response must use these exact delimiters and contain NOTHING else:
 
 <<RESUME_START>>
 (the full tailored resume in Markdown goes here)
@@ -331,23 +498,23 @@ Begin now."""
 
 
 # ---------------------------------------------------------------------------
-# Prompts (legacy — kept for cover letter which is separate from the skill)
+# Prompts (legacy - kept for cover letter which is separate from the skill)
 # ---------------------------------------------------------------------------
 def build_resume_prompt(base_resume: str, jd_text: str, candidate_name: str) -> str:
     return f"""You are an expert resume writer specializing in ATS optimization and strategic keyword matching for senior Scrum Master and Product Manager roles.
 
-TASK: Tailor the candidate's base resume to match the target job description. Output ONLY the tailored resume in Markdown format — no commentary, no explanations, no preamble.
+TASK: Tailor the candidate's base resume to match the target job description. Output ONLY the tailored resume in Markdown format - no commentary, no explanations, no preamble.
 
 RULES:
-1. TRUTHFULNESS IS PARAMOUNT — never fabricate experience, metrics, or skills. Only reframe existing experience using JD-aligned language.
+1. TRUTHFULNESS IS PARAMOUNT - never fabricate experience, metrics, or skills. Only reframe existing experience using JD-aligned language.
 2. Mirror the JD's exact terminology wherever truthful (e.g., if JD says "high-performing teams" use that phrase, if JD says "processing components" use that phrase).
 3. Reorder bullet points so the most JD-relevant ones come first under each role.
 4. Adjust the Professional Summary to directly address the target role's key requirements.
-5. Keep all quantified metrics (78%, 30%, $15M, etc.) — they are powerful differentiators.
-6. Maintain the same resume structure: Name → Professional Summary → Certifications → Key Skills → Professional Experience → Education.
+5. Keep all quantified metrics (78%, 30%, $15M, etc.) - they are powerful differentiators.
+6. Maintain the same resume structure: Name -> Professional Summary -> Certifications -> Key Skills -> Professional Experience -> Education.
 7. In Key Skills, add any JD-mentioned skills the candidate genuinely has but hasn't listed.
 8. Keep to 1-2 pages. Be concise but impactful.
-9. Do NOT include the company name or job title in the resume header — it should work as a general submission.
+9. Do NOT include the company name or job title in the resume header - it should work as a general submission.
 
 BASE RESUME:
 ---
@@ -366,9 +533,9 @@ def build_cover_letter_prompt(base_resume: str, jd_text: str, tailored_resume: s
     voice_section = ""
     if cover_letter_voice:
         voice_section = f"""
-VOICE REFERENCE — Match this candidate's authentic writing style, tone, and personality.
+VOICE REFERENCE - Match this candidate's authentic writing style, tone, and personality.
 Study the sentence structure, warmth level, formality, and storytelling approach in the sample below.
-Mirror how they open letters, transition between ideas, and express enthusiasm. Do NOT copy content — only match the voice.
+Mirror how they open letters, transition between ideas, and express enthusiasm. Do NOT copy content - only match the voice.
 ---
 {cover_letter_voice}
 ---
@@ -376,12 +543,21 @@ Mirror how they open letters, transition between ideas, and express enthusiasm. 
 """
     return f"""You are writing a cover letter for {candidate_name} applying to the {role} position at {company}.
 {voice_section}VOICE & TONE:
-- {"Match the candidate's voice from the reference above" if cover_letter_voice else "Professional but warm and human"} — not robotic or generic
+- {"Match the candidate's voice from the reference above" if cover_letter_voice else "Professional but warm and human"} - not robotic or generic
 - Show genuine interest in the company's mission and culture
 - Weave in specific achievements with metrics
 - Keep it to 3-4 paragraphs, under 400 words
 - Address "Dear Hiring Manager" unless a specific name is in the JD
 - End with a confident but not arrogant call to action
+
+WRITING QUALITY:
+- Do NOT use em-dashes. Use commas, colons, or periods instead.
+- Do NOT open with "I am writing to express my strong interest" or any variation. Start with something specific about the company or a direct statement of fit.
+- Do NOT use "resonates deeply", "aligns perfectly", "I am excited about the opportunity", or "I would welcome the opportunity to discuss".
+- Banned words: leverage, utilize, spearhead, facilitate, foster, cultivate, harness, holistic, robust, cutting-edge, seamless, synergy, paradigm, actionable.
+- Use plain, confident language: "use" not "utilize", "led" not "spearheaded", "strong" not "robust".
+- Each paragraph should have a distinct purpose. Avoid restating the same point in different buzzwords.
+- Close with a specific, natural call to action, not a formula.
 
 STRUCTURE:
 1. "Dear Hiring Manager," (or specific name if in JD)
@@ -537,6 +713,7 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
         print(f"    WARNING: Resume markers not found in output, using full response as resume.")
         tailored_resume = raw_output
 
+    tailored_resume = sanitize_ai_output(tailored_resume, context="resume")
     resume_md_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_Resume.md"
     resume_md_path.write_text(tailored_resume, encoding="utf-8")
     print(f"    Saved: {resume_md_path.name}")
@@ -548,6 +725,7 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
 
     # Save report
     if report:
+        report = sanitize_ai_output(report, context="report")
         report_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_Report.md"
         report_path.write_text(report, encoding="utf-8")
         print(f"    Saved: {report_path.name}")
@@ -560,6 +738,7 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
         cl_prompt = build_cover_letter_prompt(base_resume, jd_text, tailored_resume, candidate_name, company, role, cover_letter_voice)
         cover_letter = call_claude(cl_prompt)
         if cover_letter:
+            cover_letter = sanitize_ai_output(cover_letter, context="cover_letter")
             cl_path = output_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_CoverLetter.md"
             cl_path.write_text(cover_letter, encoding="utf-8")
             print(f"    Saved: {cl_path.name}")
