@@ -103,6 +103,7 @@ def get_package_info(jd_name: str, tailor_entry: dict) -> dict:
     apply_url = ""
     location = ""
     salary = ""
+    relevance = ""
     jd_path = ROOT / "JDs" / jd_name
     if jd_path.exists():
         jd_text = jd_path.read_text(encoding="utf-8")
@@ -113,6 +114,8 @@ def get_package_info(jd_name: str, tailor_entry: dict) -> dict:
                 location = line.split("|")[2].strip().strip("*")
             if "**Salary**" in line:
                 salary = line.replace("**Salary:**", "").strip()
+            if "**Relevance**" in line and "|" in line:
+                relevance = line.split("|")[2].strip().strip("*")
 
         # Try H1 for better role/company
         for line in jd_text.split("\n"):
@@ -171,6 +174,7 @@ def get_package_info(jd_name: str, tailor_entry: dict) -> dict:
         "salary": salary,
         "apply_url": apply_url,
         "confidence": confidence,
+        "relevance": relevance,
         "output_dir": str(output_dir) if output_dir else "",
         "processed_at": tailor_entry.get("processed_at", ""),
         "files": files,
@@ -196,6 +200,20 @@ def _confidence_color(confidence: str) -> str:
         return "#6b7280"
 
 
+def _relevance_color(relevance: str) -> str:
+    """Return a color for the relevance score badge."""
+    import re as _re
+    pcts = _re.findall(r"(\d+)%", relevance)
+    if pcts:
+        val = int(pcts[0])
+        if val >= 80:
+            return "#3b82f6"   # blue — strong relevance
+        if val >= 60:
+            return "#f59e0b"   # amber — moderate
+        return "#ef4444"       # red — low
+    return "#6b7280"           # gray — unknown
+
+
 def _render_cover_letter_html(text: str) -> str:
     """Convert plain-text cover letter to HTML paragraphs."""
     import html as html_mod
@@ -210,10 +228,24 @@ def _render_cover_letter_html(text: str) -> str:
 def generate_html(packages: list[dict], candidate_name: str) -> str:
     now = datetime.now().strftime("%B %d, %Y at %I:%M %p")
 
+    # Check if any package has relevance data
+    has_relevance = any(pkg.get("relevance") for pkg in packages)
+
     # Build table rows — one per role
     rows = ""
     for i, pkg in enumerate(packages):
         conf_color = _confidence_color(pkg["confidence"])
+
+        # Relevance badge — extract just the percentage for the column
+        rel_display = ""
+        if has_relevance:
+            rel_raw = pkg.get("relevance", "")
+            if rel_raw:
+                import re as _re
+                rel_pcts = _re.findall(r"(\d+%)", rel_raw)
+                rel_display = rel_pcts[0] if rel_pcts else rel_raw
+            else:
+                rel_display = "—"
 
         # Resume download button (cid: link to attachment)
         resume_btn = '<span style="color:#94a3b8;font-size:0.85em;">—</span>'
@@ -235,16 +267,36 @@ def generate_html(packages: list[dict], candidate_name: str) -> str:
         salary_display = pkg.get("salary") or "—"
         bg = "#ffffff" if i % 2 == 0 else "#f8fafc"
 
+        rel_cell = ""
+        if has_relevance:
+            rel_color = _relevance_color(rel_display)
+            rel_cell = f'<td style="padding:12px 10px;text-align:center;font-weight:700;color:{rel_color};font-size:0.95em;">{rel_display}</td>'
+
         rows += f"""
             <tr style="background:{bg};">
                 <td style="padding:12px 10px;font-weight:600;color:#1e293b;font-size:0.9em;">{pkg['company']}</td>
                 <td style="padding:12px 10px;color:#334155;font-size:0.9em;">{pkg['role']}</td>
                 <td style="padding:12px 10px;color:#64748b;font-size:0.85em;">{pkg['location']}</td>
+                {rel_cell}
                 <td style="padding:12px 10px;text-align:center;font-weight:700;color:{conf_color};font-size:0.95em;">{pkg['confidence']}</td>
                 <td style="padding:12px 10px;color:#64748b;font-size:0.85em;">{salary_display}</td>
                 <td style="padding:12px 10px;text-align:center;">{resume_btn}</td>
                 <td style="padding:12px 10px;text-align:center;">{cl_btn}</td>
                 <td style="padding:12px 10px;text-align:center;">{apply_btn}</td>
+            </tr>"""
+
+        # Inline cover letter row
+        if pkg.get("cover_letter_text"):
+            colspan = 9 if has_relevance else 8
+            cl_html = _render_cover_letter_html(pkg["cover_letter_text"])
+            rows += f"""
+            <tr style="background:{bg};">
+                <td colspan="{colspan}" style="padding:0 10px 16px;">
+                    <div style="border-left:4px solid #047857;background:#f0fdf4;border-radius:0 8px 8px 0;padding:16px 20px;margin-top:4px;">
+                        <div style="font-size:0.75em;font-weight:700;color:#047857;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Cover Letter</div>
+                        <div style="font-size:0.85em;color:#1e293b;">{cl_html}</div>
+                    </div>
+                </td>
             </tr>"""
 
     html = f"""<!DOCTYPE html>
@@ -292,6 +344,7 @@ def generate_html(packages: list[dict], candidate_name: str) -> str:
                         <th style="padding:12px 10px;text-align:left;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Company</th>
                         <th style="padding:12px 10px;text-align:left;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Role</th>
                         <th style="padding:12px 10px;text-align:left;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Location</th>
+                        {'<th style="padding:12px 10px;text-align:center;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Relevance</th>' if has_relevance else ''}
                         <th style="padding:12px 10px;text-align:center;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Match</th>
                         <th style="padding:12px 10px;text-align:left;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Salary</th>
                         <th style="padding:12px 10px;text-align:center;color:white;font-size:0.8em;text-transform:uppercase;letter-spacing:0.06em;">Resume</th>
@@ -425,7 +478,8 @@ def open_html_report(html: str) -> Path:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def run(no_email: bool = False, no_html: bool = False, since: str | None = None):
+def run(no_email: bool = False, no_html: bool = False, since: str | None = None,
+        limit: int | None = None, min_match: int = 0, min_relevance: int = 0):
     print("=" * 60)
     print(f"  Notify — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
@@ -450,6 +504,59 @@ def run(no_email: bool = False, no_html: bool = False, since: str | None = None)
     if not new_packages:
         print("\n  No new packages to notify about.")
         return
+
+    # Filter by minimum relevance score
+    if min_relevance:
+        filtered = []
+        skipped_rel = []
+        for pkg in new_packages:
+            rel_str = pkg.get("relevance", "")
+            if not rel_str:
+                filtered.append(pkg)  # No relevance data — keep it
+                continue
+            try:
+                import re as _re
+                pcts = _re.findall(r"(\d+)%", rel_str)
+                rel_val = int(pcts[0]) if pcts else 100
+                if rel_val >= min_relevance:
+                    filtered.append(pkg)
+                else:
+                    skipped_rel.append(pkg)
+            except (ValueError, IndexError):
+                filtered.append(pkg)
+        new_packages = filtered
+        if skipped_rel:
+            print(f"\n  Filtered out {len(skipped_rel)} package(s) below {min_relevance}% relevance:")
+            for pkg in skipped_rel:
+                print(f"    - {pkg['role']} @ {pkg['company']} (Relevance: {pkg.get('relevance', 'N/A')})")
+
+    # Filter by minimum match score
+    if min_match:
+        before = len(new_packages)
+        filtered = []
+        skipped = []
+        for pkg in new_packages:
+            try:
+                score = int(pkg["confidence"].replace("%", ""))
+                if score >= min_match:
+                    filtered.append(pkg)
+                else:
+                    skipped.append(pkg)
+            except (ValueError, AttributeError):
+                filtered.append(pkg)  # Keep packages with unparseable scores
+        new_packages = filtered
+        if skipped:
+            print(f"\n  Filtered out {len(skipped)} package(s) below {min_match}% match:")
+            for pkg in skipped:
+                print(f"    - {pkg['role']} @ {pkg['company']} ({pkg['confidence']})")
+
+    if not new_packages:
+        print("\n  No packages meet the minimum threshold(s).")
+        return
+
+    if limit and len(new_packages) > limit:
+        print(f"\n  {len(new_packages)} packages available, limiting to {limit}.")
+        new_packages = new_packages[:limit]
 
     print(f"\n  {len(new_packages)} new package(s) to notify about.\n")
 
@@ -488,7 +595,8 @@ def run(no_email: bool = False, no_html: bool = False, since: str | None = None)
     # Summary
     print(f"\n  Notified about {len(new_packages)} packages:")
     for pkg in new_packages:
-        print(f"    - {pkg['role']} @ {pkg['company']} (Match: {pkg['confidence']})")
+        rel_info = f", Relevance: {pkg['relevance'].split('(')[0].strip()}" if pkg.get("relevance") else ""
+        print(f"    - {pkg['role']} @ {pkg['company']} (Match: {pkg['confidence']}{rel_info})")
     print()
 
 
@@ -497,6 +605,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-email", action="store_true", help="Skip email notification")
     parser.add_argument("--no-html", action="store_true", help="Skip HTML report")
     parser.add_argument("--since", type=str, help="Only notify about packages since this date (YYYY-MM-DD)")
+    parser.add_argument("--limit", type=int, help="Max number of packages to include in digest")
+    parser.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include (e.g. 80)")
+    parser.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include (e.g. 60)")
     args = parser.parse_args()
 
-    run(no_email=args.no_email, no_html=args.no_html, since=args.since)
+    run(no_email=args.no_email, no_html=args.no_html, since=args.since,
+        limit=args.limit, min_match=args.min_match, min_relevance=args.min_relevance)

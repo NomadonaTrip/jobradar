@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -108,6 +109,68 @@ def move_file(service, file_id: str, dest_folder_id: str):
     ).execute()
 
 
+def download_binary(service, file_id: str) -> bytes:
+    """Download a binary file from Drive and return raw bytes."""
+    request = service.files().get_media(fileId=file_id)
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def find_and_attach_binaries(service, folder_id: str, data: dict):
+    """Search Drive folder for companion resume/cover letter files.
+
+    If the JSON data lacks resumeFileData or coverLetterFileData, look for
+    files named resume_{First}_{Last}_* or cover_letter_{First}_{Last}_*
+    in the same folder. Download, base64-encode, and inject into data.
+    """
+    first = data.get("firstName", "").strip()
+    last = data.get("lastName", "").strip()
+    if not first or not last:
+        return
+
+    file_map = [
+        ("resumeFileData", f"resume_{first}_{last}"),
+        ("coverLetterFileData", f"cover_letter_{first}_{last}"),
+    ]
+
+    for data_key, prefix in file_map:
+        if data.get(data_key):
+            continue  # already embedded in JSON
+
+        # Search for matching files (any extension)
+        query = (
+            f"'{folder_id}' in parents "
+            f"and name contains '{prefix}' "
+            f"and trashed = false "
+            f"and mimeType != 'application/vnd.google-apps.folder'"
+        )
+        resp = service.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name, mimeType)",
+            orderBy="createdTime desc",
+            pageSize=1,
+        ).execute()
+        matches = resp.get("files", [])
+        if not matches:
+            continue
+
+        match = matches[0]
+        print(f"    Found companion file: {match['name']}")
+        try:
+            raw = download_binary(service, match["id"])
+            data[data_key] = base64.b64encode(raw).decode("utf-8")
+            # Preserve the original filename for extension detection downstream
+            data[data_key + "Name"] = match["name"]
+            print(f"    Attached {data_key} ({len(raw):,} bytes)")
+        except Exception as e:
+            print(f"    WARNING: could not download {match['name']}: {e}")
+
+
 def run(dry_run: bool = False):
     print("=" * 60)
     print("  Auto-Import — checking Drive for new submissions")
@@ -151,6 +214,9 @@ def run(dry_run: bool = False):
             print(f"    ERROR downloading: {e}")
             skipped += 1
             continue
+
+        # Attach companion resume/cover letter files from Drive if not in JSON
+        find_and_attach_binaries(service, inbox_id, data)
 
         if dry_run:
             name = f"{data.get('firstName', '?')} {data.get('lastName', '?')}"

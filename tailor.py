@@ -419,7 +419,7 @@ def call_claude_with_skill(prompt: str, skill_prompt: str, max_retries: int = 2)
                     "--output-format", "json",
                     "--append-system-prompt", skill_prompt,
                     "--allowedTools", "WebSearch",
-                    "--max-budget-usd", "2.00",
+                    "--max-budget-usd", "3.00",
                 ],
                 capture_output=True,
                 text=True,
@@ -454,6 +454,41 @@ def extract_between(text: str, start_marker: str, end_marker: str) -> str:
     return text[start_idx + len(start_marker):end_idx].strip()
 
 
+def _extract_jd_metadata(jd_text: str) -> dict:
+    """Extract structured metadata from a JD markdown file.
+
+    Parses the H1 heading (# Role - Company) and the metadata table
+    (| **Field** | Value |) to return {company, role, location}.
+    """
+    meta = {"company": "", "role": "", "location": ""}
+
+    for line in jd_text.split("\n"):
+        stripped = line.strip()
+
+        # H1 heading: "# Role — Company"
+        if stripped.startswith("# ") and not meta["role"]:
+            heading = stripped[2:]
+            if " — " in heading:
+                meta["role"], meta["company"] = heading.split(" — ", 1)
+            elif " - " in heading:
+                meta["role"], meta["company"] = heading.split(" - ", 1)
+            else:
+                meta["role"] = heading
+
+        # Metadata table rows
+        if "**Company**" in stripped and "|" in stripped:
+            parts = stripped.split("|")
+            if len(parts) >= 3:
+                meta["company"] = parts[2].strip().strip("*")
+        if "**Location**" in stripped and "|" in stripped:
+            parts = stripped.split("|")
+            if len(parts) >= 3:
+                meta["location"] = parts[2].strip().strip("*")
+
+    meta = {k: v.strip() for k, v in meta.items()}
+    return meta
+
+
 def build_skill_resume_prompt(resume_library: str, jd_text: str, candidate_name: str,
                                discovery_notes: str = "") -> str:
     """Build the prompt for skill-based resume + report generation."""
@@ -466,6 +501,18 @@ DISCOVERY NOTES (candidate's self-reported achievements, metrics, and context fr
 ---
 
 """
+
+    # Extract structured metadata so the skill can build targeted research queries
+    meta = _extract_jd_metadata(jd_text)
+    metadata_section = ""
+    if meta.get("company") or meta.get("role"):
+        metadata_section = f"""STRUCTURED JOB METADATA (use these for targeted WebSearch queries):
+- Company: {meta.get('company', 'Unknown')}
+- Role: {meta.get('role', 'Unknown')}
+- Location: {meta.get('location', 'Not specified')}
+
+"""
+
     return f"""TASK: Tailor a resume for {candidate_name} using the autonomous pipeline skill methodology.
 
 MODE: EXPRESS / HEADLESS - Execute all phases automatically. No checkpoints. No interactive questions.
@@ -473,7 +520,7 @@ MODE: EXPRESS / HEADLESS - Execute all phases automatically. No checkpoints. No 
 RESUME LIBRARY:
 {resume_library}
 
-{discovery_section}TARGET JOB DESCRIPTION:
+{discovery_section}{metadata_section}TARGET JOB DESCRIPTION:
 ---
 {jd_text}
 ---
@@ -855,6 +902,120 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
 
 
 # ---------------------------------------------------------------------------
+# Cover letter backfill
+# ---------------------------------------------------------------------------
+def backfill_cover_letters(dry_run: bool = False, limit: int | None = None):
+    """Generate cover letters for output packages that are missing them."""
+    print("=" * 60)
+    print(f"  Cover Letter Backfill — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    config = load_config()
+    candidate = config["candidate"]
+    candidate_name = candidate["name"]
+
+    # Load base resume (used in cover letter prompt)
+    base_resume_path = ROOT / candidate.get("base_resume", "base_resume.md")
+    base_resume = ""
+    if base_resume_path.exists():
+        base_resume = base_resume_path.read_text(encoding="utf-8")
+
+    # Load cover letter voice — required for backfill
+    cover_letter_voice = load_cover_letter_library(config)
+    if not cover_letter_voice:
+        print(f"\n  ERROR: No cover letter voice reference found.")
+        print(f"  Backfill requires base_cover_letter.md or files in cover_letters/.")
+        sys.exit(1)
+
+    # Scan output dirs for packages missing a cover letter
+    output_root = ROOT / "output"
+    if not output_root.exists():
+        print(f"\n  No output directory found at {output_root}")
+        return
+
+    missing = []
+    for pkg_dir in sorted(output_root.iterdir()):
+        if not pkg_dir.is_dir():
+            continue
+        has_resume = list(pkg_dir.glob("*_Resume.md"))
+        has_jd = (pkg_dir / "jd.md").exists()
+        has_cover = list(pkg_dir.glob("*CoverLetter.md"))
+        if has_resume and has_jd and not has_cover:
+            missing.append(pkg_dir)
+
+    if limit:
+        missing = missing[:limit]
+
+    print(f"\n  Packages missing cover letters: {len(missing)}")
+    if not missing:
+        print("  Nothing to backfill.")
+        return
+
+    print(f"  Output directory: {output_root}/")
+    print()
+
+    success = 0
+    failed = 0
+    for i, pkg_dir in enumerate(missing, 1):
+        safe_name = pkg_dir.name
+        jd_text = (pkg_dir / "jd.md").read_text(encoding="utf-8")
+        resume_path = list(pkg_dir.glob("*_Resume.md"))[0]
+        tailored_resume = resume_path.read_text(encoding="utf-8")
+
+        # Extract company and role from JD (same logic as process_jd)
+        company = "Unknown"
+        role = "Unknown"
+        for line in jd_text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("# "):
+                heading = stripped[2:]
+                if " — " in heading:
+                    role, company = heading.split(" — ", 1)
+                elif " - " in heading:
+                    role, company = heading.split(" - ", 1)
+                else:
+                    role = heading
+                break
+        if company == "Unknown":
+            for line in jd_text.split("\n"):
+                if "**Company**" in line and "|" in line:
+                    company = line.split("|")[2].strip().strip("*")
+                    break
+        company = company.strip()
+        role = role.strip()
+
+        print(f"  [{i}/{len(missing)}] {role} @ {company}")
+
+        if dry_run:
+            print(f"    [DRY RUN] Would generate cover letter in {safe_name}/")
+            success += 1
+            continue
+
+        cl_prompt = build_cover_letter_prompt(
+            base_resume, jd_text, tailored_resume,
+            candidate_name, company, role, cover_letter_voice
+        )
+        cover_letter = call_claude(cl_prompt)
+        if cover_letter:
+            cover_letter = sanitize_ai_output(cover_letter, context="cover_letter")
+            cl_path = pkg_dir / f"{candidate_name.replace(' ', '_')}_{safe_name}_CoverLetter.md"
+            cl_path.write_text(cover_letter, encoding="utf-8")
+            print(f"    Saved: {cl_path.name}")
+            success += 1
+        else:
+            print(f"    WARNING: Cover letter generation failed.")
+            failed += 1
+
+    print("\n" + "=" * 60)
+    print(f"  BACKFILL COMPLETE")
+    print("=" * 60)
+    print(f"  Processed: {success + failed}")
+    print(f"  Success:   {success}")
+    print(f"  Failed:    {failed}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -862,6 +1023,11 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Preview without generating")
     parser.add_argument("--limit", type=int, help="Max number of JDs to process")
     parser.add_argument("--jd", type=str, help="Glob pattern to match specific JD files (e.g. 'CGI*.md')")
+    parser.add_argument("--cover-letters-only", action="store_true",
+                        help="Backfill cover letters for existing packages that are missing them")
     args = parser.parse_args()
 
-    run(dry_run=args.dry_run, limit=args.limit, jd_glob=args.jd)
+    if args.cover_letters_only:
+        backfill_cover_letters(dry_run=args.dry_run, limit=args.limit)
+    else:
+        run(dry_run=args.dry_run, limit=args.limit, jd_glob=args.jd)

@@ -778,6 +778,35 @@ body.hero-mode .step[data-step="0"] .nav-row {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Honeypot (invisible to humans) ── */
+
+.hp-field {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Step validation errors ── */
+
+.step-error {
+  color: var(--error);
+  font-size: 0.85em;
+  font-weight: 600;
+  padding: 8px 12px;
+  background: rgba(212, 86, 78, 0.08);
+  border-radius: var(--radius);
+  display: none;
+}
+
+.step-error.visible {
+  display: block;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 640px) {

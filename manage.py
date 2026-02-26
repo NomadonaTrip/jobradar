@@ -423,6 +423,85 @@ def build_cover_letter_from_onboarding(data: dict, customer_dir: Path = None) ->
     return ""
 
 
+def _build_relevance_config(data: dict) -> dict:
+    """Auto-generate relevance scoring config from onboarding data.
+
+    Creates one focus area per role with decreasing weight (first role = 3,
+    second = 2, rest = 1). Keywords are derived from role names and certifications.
+    """
+    roles = data.get("roles", [])
+    if not roles:
+        return {}
+
+    # Map common role keywords to expanded keyword sets
+    ROLE_KEYWORD_MAP = {
+        "security": ["security", "cybersecurity", "cyber security", "infosec", "information security"],
+        "risk": ["risk", "risk management", "risk assessment", "risk analysis", "enterprise risk"],
+        "grc": ["GRC", "governance", "compliance", "audit", "regulatory", "policy"],
+        "analyst": ["analyst", "analysis", "assessment", "evaluation"],
+        "architect": ["architect", "architecture", "design", "framework"],
+        "scrum": ["scrum", "agile", "sprint", "backlog", "scrum master", "kanban"],
+        "product": ["product manager", "product owner", "roadmap", "stakeholder", "product strategy"],
+        "project": ["project manager", "project management", "PMO", "PMP", "waterfall"],
+        "devops": ["devops", "CI/CD", "deployment", "infrastructure", "automation"],
+        "cloud": ["cloud", "AWS", "Azure", "GCP", "cloud security"],
+        "soc": ["SOC", "incident response", "SIEM", "threat detection", "security operations", "security monitoring"],
+        "penetration": ["penetration testing", "vulnerability assessment", "ethical hacking", "security testing"],
+        "data": ["data", "data analysis", "data science", "analytics", "business intelligence"],
+        "network": ["network", "network security", "firewall", "IDS", "IPS"],
+    }
+
+    focus_areas = []
+    for i, role in enumerate(roles):
+        role_lower = role.lower()
+        weight = max(3 - i, 1)  # First=3, second=2, rest=1
+
+        # Collect keywords from role name
+        keywords = [role]  # Always include the full role name
+        for key, kw_list in ROLE_KEYWORD_MAP.items():
+            if key in role_lower:
+                keywords.extend(kw_list)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_kw = []
+        for kw in keywords:
+            kw_lower = kw.lower()
+            if kw_lower not in seen:
+                seen.add(kw_lower)
+                unique_kw.append(kw)
+
+        focus_areas.append({
+            "name": role,
+            "weight": weight,
+            "keywords": unique_kw,
+        })
+
+    # Add cert-derived keywords to the most relevant focus area
+    certs = data.get("discovery", {}).get("certs", "")
+    if certs:
+        cert_keywords = [c.strip() for c in re.split(r"[,;\n]", certs) if c.strip()]
+        if focus_areas and cert_keywords:
+            # Add certs to first focus area (highest priority)
+            existing = {kw.lower() for kw in focus_areas[0]["keywords"]}
+            for ck in cert_keywords:
+                if ck.lower() not in existing:
+                    focus_areas[0]["keywords"].append(ck)
+                    existing.add(ck.lower())
+
+    # Default anti-signals
+    anti_signals = [
+        "sales", "presales", "pre-sales", "account executive",
+        "business development", "marketing", "recruiter", "staffing",
+    ]
+
+    return {
+        "min_score": 0.3,
+        "focus_areas": focus_areas,
+        "anti_signals": anti_signals,
+    }
+
+
 def build_customer_config(data: dict, slug: str) -> dict:
     """Generate a customer-specific config.yaml."""
     # Load the master config as template for API keys
@@ -442,7 +521,7 @@ def build_customer_config(data: dict, slug: str) -> dict:
         if nums:
             min_salary = int(nums[0])
 
-    return {
+    config = {
         "candidate": {
             "name": f"{data['firstName']} {data['lastName']}",
             "location": data.get("location", ""),
@@ -453,8 +532,8 @@ def build_customer_config(data: dict, slug: str) -> dict:
             "cover_letter_library": "cover_letters/",
         },
         "search": {
-            "queries": data.get("roles", ["Scrum Master", "Product Manager"]),
-            "locations": data.get("locations", ["Canada"]),
+            "queries": data.get("roles") or ["Scrum Master", "Product Manager"],
+            "locations": data.get("locations") or [data.get("location", "Canada") or "Canada"],
             "remote_only": remote_only,
             "date_posted": "week",
             "results_per_query": 10,
@@ -495,6 +574,13 @@ def build_customer_config(data: dict, slug: str) -> dict:
             "total_delivered": 0,
         },
     }
+
+    # Auto-populate relevance config from onboarding data
+    relevance = _build_relevance_config(data)
+    if relevance:
+        config["relevance"] = relevance
+
+    return config
 
 
 def build_discovery_notes(data: dict) -> str:
@@ -673,11 +759,17 @@ def cmd_run(args):
         notify_cmd = [PYTHON, str(ROOT / "notify.py")]
         if args.no_email:
             notify_cmd.append("--no-email")
+        if args.notify_limit:
+            notify_cmd.extend(["--limit", str(args.notify_limit)])
+        if args.min_match:
+            notify_cmd.extend(["--min-match", str(args.min_match)])
+        if args.min_relevance:
+            notify_cmd.extend(["--min-relevance", str(args.min_relevance)])
         steps.append(("NOTIFY", notify_cmd))
 
     for name, cmd in steps:
         print(f"  [{name}]")
-        result = subprocess.run(cmd, cwd=str(cdir), env=env, timeout=1800)
+        result = subprocess.run(cmd, cwd=str(cdir), env=env, timeout=7200)
         if result.returncode != 0:
             print(f"  [{name}] FAILED (exit {result.returncode})")
         else:
@@ -1000,6 +1092,9 @@ def main():
     p_run.add_argument("--fetch-only", action="store_true")
     p_run.add_argument("--skip-fetch", action="store_true")
     p_run.add_argument("--tailor-limit", type=int, default=10)
+    p_run.add_argument("--notify-limit", type=int, default=0, help="Max packages to include in digest (0 = unlimited)")
+    p_run.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include in digest (e.g. 80)")
+    p_run.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include in digest (e.g. 60)")
     p_run.add_argument("--no-email", action="store_true")
 
     # run-all
@@ -1007,6 +1102,9 @@ def main():
     p_all.add_argument("--fetch-only", action="store_true")
     p_all.add_argument("--skip-fetch", action="store_true")
     p_all.add_argument("--tailor-limit", type=int, default=10)
+    p_all.add_argument("--notify-limit", type=int, default=0, help="Max packages to include in digest (0 = unlimited)")
+    p_all.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include in digest (e.g. 80)")
+    p_all.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include in digest (e.g. 60)")
     p_all.add_argument("--no-email", action="store_true")
 
     # renew

@@ -54,12 +54,11 @@
       <!-- STEP 0: Welcome -->
       <div class="step active" data-step="0">
         <div class="step-number">Welcome</div>
-        <h2>Your job search,<br />on <em>autopilot</em></h2>
+        <h2>Stop Searching<br />Start <em> &nbsp; Applying</em></h2>
         <p class="subtitle">
-          We'll set up your personalized job-hunting pipeline in about 48 hours.
-          Every week, you'll receive tailored resumes, cover letters, and match
-          reports for roles that fit you &mdash; ready for your final review
-          before applying.
+          Every morning, we send you a curated list of roles that match your
+          profile — each one paired with a tailored resume and cover letter,
+          ready to send. You just pick the roles you want and apply.
         </p>
         <div class="steps-overview">
           <div class="steps-overview-grid">
@@ -82,7 +81,7 @@
         <div class="nav-row nav-row--borderless">
           <div></div>
           <button class="btn btn-primary" onclick="nextStep()">
-            Begin Onboarding
+            Start My Daily Job Digest
           </button>
         </div>
       </div>
@@ -137,6 +136,19 @@
           />
         </div>
 
+        <!-- Honeypot: invisible to humans, bots auto-fill it -->
+        <div class="hp-field" aria-hidden="true">
+          <label for="website">Company Website</label>
+          <input
+            type="text"
+            id="website"
+            name="website"
+            tabindex="-1"
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="step-error" id="stepError1"></div>
         <div class="nav-row">
           <button class="btn btn-secondary" onclick="prevStep()">Back</button>
           <button class="btn btn-primary" onclick="nextStep()">Continue</button>
@@ -223,6 +235,7 @@
           </div>
         </div>
 
+        <div class="step-error" id="stepError2"></div>
         <div class="nav-row">
           <button class="btn btn-secondary" onclick="prevStep()">Back</button>
           <button class="btn btn-primary" onclick="nextStep()">Continue</button>
@@ -318,6 +331,7 @@
           ></textarea>
         </div>
 
+        <div class="step-error" id="stepError3"></div>
         <div class="nav-row">
           <button class="btn btn-secondary" onclick="prevStep()">Back</button>
           <button class="btn btn-primary" onclick="nextStep()">Continue</button>

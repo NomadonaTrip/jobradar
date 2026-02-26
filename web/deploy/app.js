@@ -5,10 +5,63 @@ const totalSteps = 6;
 const tags = { roles: [], locations: [], exclude: [] };
 let resumeFileData = "";
 let resumeFileName = "";
+const _formLoadedAt = Date.now();
+
+// ── XSS Prevention ──
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
+// ── Client-Side Validation (Layer 5) ──
+
+function validateStep(step) {
+  const errorId = `stepError${step}`;
+  const errorEl = document.getElementById(errorId);
+  if (!errorEl) return true;
+
+  let msg = "";
+
+  if (step === 1) {
+    const firstName = document.getElementById("firstName").value.trim();
+    const lastName = document.getElementById("lastName").value.trim();
+    const email = document.getElementById("email").value.trim();
+    if (!firstName || !lastName) {
+      msg = "First name and last name are required.";
+    } else if (!email) {
+      msg = "Email address is required.";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      msg = "Please enter a valid email address.";
+    }
+  } else if (step === 2) {
+    const resumeText = document.getElementById("resumeText").value.trim();
+    if (!resumeText && !resumeFileData) {
+      msg = "Please upload a resume file or paste your resume text.";
+    }
+  } else if (step === 3) {
+    if (tags.roles.length === 0) {
+      msg = "Please add at least one target role.";
+    }
+  }
+
+  if (msg) {
+    errorEl.textContent = msg;
+    errorEl.classList.add("visible");
+    return false;
+  }
+  errorEl.textContent = "";
+  errorEl.classList.remove("visible");
+  return true;
+}
 
 // ── Navigation ──
 
 function nextStep() {
+  if (currentStep >= 1 && currentStep <= 3 && !validateStep(currentStep)) {
+    return;
+  }
   if (currentStep === 4) buildReview();
   if (currentStep < totalSteps) {
     document
@@ -73,7 +126,12 @@ function renderTags(group) {
   tags[group].forEach((tag, i) => {
     const el = document.createElement("span");
     el.className = "tag";
-    el.innerHTML = `${tag}<button onclick="removeTag('${group}',${i})">&times;</button>`;
+    const textNode = document.createTextNode(tag);
+    el.appendChild(textNode);
+    const btn = document.createElement("button");
+    btn.innerHTML = "&times;";
+    btn.onclick = () => removeTag(group, i);
+    el.appendChild(btn);
     wrap.insertBefore(el, input);
   });
 }
@@ -90,7 +148,7 @@ function handleFileUpload(input) {
     const file = input.files[0];
     document.getElementById("uploadZone").classList.add("has-file");
     document.getElementById("uploadText").innerHTML =
-      `<strong>${file.name}</strong><br><span class="file-types">${(file.size / 1024).toFixed(0)} KB &mdash; Click to change</span>`;
+      `<strong>${escapeHtml(file.name)}</strong><br><span class="file-types">${(file.size / 1024).toFixed(0)} KB &mdash; Click to change</span>`;
 
     if (file.name.endsWith(".txt") || file.name.endsWith(".md")) {
       const reader = new FileReader();
@@ -142,7 +200,7 @@ function handleCoverLetterUpload(input) {
     const file = input.files[0];
     document.getElementById("clUploadZone").classList.add("has-file");
     document.getElementById("clUploadText").innerHTML =
-      `<strong>${file.name}</strong><br><span class="file-types">${(file.size / 1024).toFixed(0)} KB &mdash; Click to change</span>`;
+      `<strong>${escapeHtml(file.name)}</strong><br><span class="file-types">${(file.size / 1024).toFixed(0)} KB &mdash; Click to change</span>`;
 
     if (file.name.endsWith(".txt") || file.name.endsWith(".md")) {
       const reader = new FileReader();
@@ -154,43 +212,53 @@ function handleCoverLetterUpload(input) {
   }
 }
 
-// ── Review builder ──
+// ── Review builder (XSS-safe) ──
 
 function buildReview() {
   const data = gatherData();
+  const e = escapeHtml;
   let html = "";
 
   html += `<div class="review-section">
       <h3>Contact Information</h3>
-      <div class="review-row"><span class="rlabel">Name</span><span class="rvalue">${data.firstName} ${data.lastName}</span></div>
-      <div class="review-row"><span class="rlabel">Email</span><span class="rvalue">${data.email}</span></div>
-      <div class="review-row"><span class="rlabel">Phone</span><span class="rvalue">${data.phone || "\u2014"}</span></div>
-      <div class="review-row"><span class="rlabel">Location</span><span class="rvalue">${data.location}</span></div>
-      <div class="review-row"><span class="rlabel">LinkedIn</span><span class="rvalue">${data.linkedin || "\u2014"}</span></div>
+      <div class="review-row"><span class="rlabel">Name</span><span class="rvalue">${e(data.firstName)} ${e(data.lastName)}</span></div>
+      <div class="review-row"><span class="rlabel">Email</span><span class="rvalue">${e(data.email)}</span></div>
+      <div class="review-row"><span class="rlabel">Phone</span><span class="rvalue">${data.phone ? e(data.phone) : "\u2014"}</span></div>
+      <div class="review-row"><span class="rlabel">Location</span><span class="rvalue">${e(data.location)}</span></div>
+      <div class="review-row"><span class="rlabel">LinkedIn</span><span class="rvalue">${data.linkedin ? e(data.linkedin) : "\u2014"}</span></div>
   </div>`;
+
+  const resumeDisplay = data.resumeText
+    ? e(data.resumeText.substring(0, 100)) + "..."
+    : data.resumeFileData
+      ? "File uploaded: " + e(data.resumeFileName)
+      : "Not provided";
+  const clDisplay = data.coverLetterText
+    ? e(data.coverLetterText.substring(0, 100)) + "..."
+    : "Not provided";
 
   html += `<div class="review-section">
       <h3>Resume</h3>
-      <div class="review-row"><span class="rlabel">Content</span><span class="rvalue">${data.resumeText ? data.resumeText.substring(0, 100) + "..." : data.resumeFileData ? "File uploaded: " + data.resumeFileName : "Not provided"}</span></div>
-      <div class="review-row"><span class="rlabel">Cover Letter</span><span class="rvalue">${data.coverLetterText ? data.coverLetterText.substring(0, 100) + "..." : "Not provided"}</span></div>
+      <div class="review-row"><span class="rlabel">Content</span><span class="rvalue">${resumeDisplay}</span></div>
+      <div class="review-row"><span class="rlabel">Cover Letter</span><span class="rvalue">${clDisplay}</span></div>
   </div>`;
 
   html += `<div class="review-section">
       <h3>Search Preferences</h3>
-      <div class="review-row"><span class="rlabel">Target Roles</span><span class="rvalue"><div class="review-tags">${data.roles.map((r) => `<span class="review-tag">${r}</span>`).join("")}</div></span></div>
-      <div class="review-row"><span class="rlabel">Locations</span><span class="rvalue"><div class="review-tags">${data.locations.map((l) => `<span class="review-tag">${l}</span>`).join("")}</div></span></div>
-      <div class="review-row"><span class="rlabel">Min Salary</span><span class="rvalue">${data.minSalary || "No minimum"}</span></div>
-      <div class="review-row"><span class="rlabel">Arrangement</span><span class="rvalue">${data.workArrangement}</span></div>
-      ${data.exclude.length ? `<div class="review-row"><span class="rlabel">Excluded</span><span class="rvalue"><div class="review-tags">${data.exclude.map((e) => `<span class="review-tag">${e}</span>`).join("")}</div></span></div>` : ""}
+      <div class="review-row"><span class="rlabel">Target Roles</span><span class="rvalue"><div class="review-tags">${data.roles.map((r) => `<span class="review-tag">${e(r)}</span>`).join("")}</div></span></div>
+      <div class="review-row"><span class="rlabel">Locations</span><span class="rvalue"><div class="review-tags">${data.locations.map((l) => `<span class="review-tag">${e(l)}</span>`).join("")}</div></span></div>
+      <div class="review-row"><span class="rlabel">Min Salary</span><span class="rvalue">${data.minSalary ? e(data.minSalary) : "No minimum"}</span></div>
+      <div class="review-row"><span class="rlabel">Arrangement</span><span class="rvalue">${e(data.workArrangement)}</span></div>
+      ${data.exclude.length ? `<div class="review-row"><span class="rlabel">Excluded</span><span class="rvalue"><div class="review-tags">${data.exclude.map((x) => `<span class="review-tag">${e(x)}</span>`).join("")}</div></span></div>` : ""}
   </div>`;
 
   html += `<div class="review-section">
       <h3>Experience Discovery</h3>
-      ${data.discovery.teamSize ? `<div class="review-row"><span class="rlabel">Team Size</span><span class="rvalue">${data.discovery.teamSize}</span></div>` : ""}
-      ${data.discovery.budget ? `<div class="review-row"><span class="rlabel">Largest Budget</span><span class="rvalue">${data.discovery.budget}</span></div>` : ""}
-      ${data.discovery.certs ? `<div class="review-row"><span class="rlabel">Certifications</span><span class="rvalue">${data.discovery.certs}</span></div>` : ""}
-      ${data.discovery.tools ? `<div class="review-row"><span class="rlabel">Tools</span><span class="rvalue">${data.discovery.tools}</span></div>` : ""}
-      ${data.discovery.industries ? `<div class="review-row"><span class="rlabel">Industries</span><span class="rvalue">${data.discovery.industries}</span></div>` : ""}
+      ${data.discovery.teamSize ? `<div class="review-row"><span class="rlabel">Team Size</span><span class="rvalue">${e(data.discovery.teamSize)}</span></div>` : ""}
+      ${data.discovery.budget ? `<div class="review-row"><span class="rlabel">Largest Budget</span><span class="rvalue">${e(data.discovery.budget)}</span></div>` : ""}
+      ${data.discovery.certs ? `<div class="review-row"><span class="rlabel">Certifications</span><span class="rvalue">${e(data.discovery.certs)}</span></div>` : ""}
+      ${data.discovery.tools ? `<div class="review-row"><span class="rlabel">Tools</span><span class="rvalue">${e(data.discovery.tools)}</span></div>` : ""}
+      ${data.discovery.industries ? `<div class="review-row"><span class="rlabel">Industries</span><span class="rvalue">${e(data.discovery.industries)}</span></div>` : ""}
   </div>`;
 
   document.getElementById("reviewContent").innerHTML = html;
@@ -227,6 +295,8 @@ function gatherData() {
       hidden: document.getElementById("d_hidden").value.trim(),
     },
     submittedAt: new Date().toISOString(),
+    _hp: document.getElementById("website").value,
+    _elapsed: Date.now() - _formLoadedAt,
   };
 }
 

@@ -13,6 +13,7 @@
 //
 // What it does:
 //   - Receives onboarding JSON from the form
+//   - Validates submission (honeypot, timing, required fields)
 //   - Appends a row to a Google Sheet (auto-created on first run)
 //   - Emails you the full JSON as an attachment
 // ============================================================
@@ -20,9 +21,85 @@
 const NOTIFY_EMAIL = 'YOUR_EMAIL_HERE';   // ← your email
 const SHEET_NAME   = 'Onboarding Submissions';
 
+// ── Silent rejection: always return fake-ok to prevent info leakage ──
+
+function silentReject(reason) {
+  Logger.log('REJECTED: ' + reason);
+  return ContentService
+    .createTextOutput(JSON.stringify({ status: 'ok' }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ── Sanitize filename: strip anything that isn't alphanumeric, hyphen, underscore, or dot ──
+
+function sanitizeFilename(str) {
+  return str.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 200);
+}
+
+// ── Server-side validation ──
+
+function validateSubmission(data) {
+  // Required fields
+  if (!data.firstName || typeof data.firstName !== 'string' || !data.firstName.trim()) {
+    return 'missing firstName';
+  }
+  if (!data.lastName || typeof data.lastName !== 'string' || !data.lastName.trim()) {
+    return 'missing lastName';
+  }
+  if (!data.email || typeof data.email !== 'string' || !data.email.trim()) {
+    return 'missing email';
+  }
+
+  // Email format
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) {
+    return 'invalid email format';
+  }
+
+  // Resume: must have text or file
+  var hasResumeText = data.resumeText && typeof data.resumeText === 'string' && data.resumeText.trim().length > 0;
+  var hasResumeFile = data.resumeFileData && typeof data.resumeFileData === 'string' && data.resumeFileData.length > 0;
+  if (!hasResumeText && !hasResumeFile) {
+    return 'missing resume';
+  }
+
+  // At least one role
+  if (!data.roles || !Array.isArray(data.roles) || data.roles.length === 0) {
+    return 'missing roles';
+  }
+
+  // Length limits
+  if (data.firstName.length > 100) return 'firstName too long';
+  if (data.lastName.length > 100) return 'lastName too long';
+  if (data.email.length > 254) return 'email too long';
+  if (data.resumeText && data.resumeText.length > 100000) return 'resumeText too long';
+  if (data.resumeFileData && data.resumeFileData.length > 10 * 1024 * 1024) return 'resumeFileData too large';
+  if (data.coverLetterText && data.coverLetterText.length > 100000) return 'coverLetterText too long';
+  if (data.roles && data.roles.length > 20) return 'too many roles';
+  if (data.locations && data.locations.length > 20) return 'too many locations';
+  if (data.exclude && data.exclude.length > 20) return 'too many excludes';
+
+  return null; // valid
+}
+
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
+
+    // ── Layer 1: Honeypot check ──
+    if (data._hp && data._hp.trim() !== '') {
+      return silentReject('honeypot filled: ' + data._hp);
+    }
+
+    // ── Layer 2: Timing check (< 15 seconds = bot) ──
+    if (typeof data._elapsed === 'number' && data._elapsed < 15000) {
+      return silentReject('too fast: ' + data._elapsed + 'ms');
+    }
+
+    // ── Layer 3: Server-side validation ──
+    var validationError = validateSubmission(data);
+    if (validationError) {
+      return silentReject('validation: ' + validationError);
+    }
 
     // ── 1. Save to Google Sheet ──
     const ss = getOrCreateSheet();
@@ -53,9 +130,16 @@ function doPost(e) {
     ]);
 
     // ── 2. Save full JSON to Drive (for auto-import) ──
+    var safeName = sanitizeFilename(data.firstName) + '_' + sanitizeFilename(data.lastName);
     const folder = getOrCreateFolder('jobRadar_Inbox');
-    const filename = 'onboarding_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.json';
-    folder.createFile(filename, JSON.stringify(data, null, 2), 'application/json');
+    const filename = 'onboarding_' + safeName + '_' + Date.now() + '.json';
+
+    // Strip anti-bot fields before persisting
+    var cleanData = JSON.parse(JSON.stringify(data));
+    delete cleanData._hp;
+    delete cleanData._elapsed;
+
+    folder.createFile(filename, JSON.stringify(cleanData, null, 2), 'application/json');
 
     // ── 3. Save binary resume file to Drive (admin visibility) ──
     if (data.resumeFileData && data.resumeFileName) {
@@ -64,7 +148,7 @@ function doPost(e) {
         var mimeType = ext === 'pdf' ? 'application/pdf'
                      : ext === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                      : 'application/octet-stream';
-        var binaryFilename = 'resume_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.' + ext;
+        var binaryFilename = 'resume_' + safeName + '_' + Date.now() + '.' + sanitizeFilename(ext);
         var decoded = Utilities.newBlob(
           Utilities.base64Decode(data.resumeFileData),
           mimeType,
@@ -83,7 +167,7 @@ function doPost(e) {
         var clMimeType = clExt === 'pdf' ? 'application/pdf'
                        : clExt === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                        : 'application/octet-stream';
-        var clBinaryFilename = 'cover_letter_' + data.firstName + '_' + data.lastName + '_' + Date.now() + '.' + clExt;
+        var clBinaryFilename = 'cover_letter_' + safeName + '_' + Date.now() + '.' + sanitizeFilename(clExt);
         var clDecoded = Utilities.newBlob(
           Utilities.base64Decode(data.coverLetterFileData),
           clMimeType,
@@ -97,7 +181,7 @@ function doPost(e) {
 
     // ── 5. Email you the full JSON ──
     const jsonBlob = Utilities.newBlob(
-      JSON.stringify(data, null, 2),
+      JSON.stringify(cleanData, null, 2),
       'application/json',
       filename
     );
@@ -121,8 +205,10 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
+    // Even errors return ok to prevent info leakage
+    Logger.log('doPost error: ' + err.toString());
     return ContentService
-      .createTextOutput(JSON.stringify({ status: 'error', message: err.toString() }))
+      .createTextOutput(JSON.stringify({ status: 'ok' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 }
