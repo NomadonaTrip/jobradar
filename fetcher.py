@@ -163,6 +163,72 @@ def _job_is_remote(job: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Date age gate — reject stale postings before they enter the pipeline
+# ---------------------------------------------------------------------------
+MAX_JD_AGE_DAYS = 14
+
+
+def parse_posted_date(raw_date: str) -> datetime | None:
+    """Parse a posted_date string into a timezone-aware datetime.
+
+    Handles ISO 8601 (with/without tz), date-only strings, and unix
+    timestamps (int/float as string).  Returns None for empty or
+    unparseable values so callers can pass the job through.
+    """
+    if not raw_date:
+        return None
+    raw_date = str(raw_date).strip()
+    if not raw_date:
+        return None
+
+    # Unix timestamp (purely numeric, possibly with decimal)
+    try:
+        ts = float(raw_date)
+        if ts > 1e9:  # sanity: after ~2001
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except ValueError:
+        pass
+
+    # ISO 8601 variants
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+    ):
+        try:
+            dt = datetime.strptime(raw_date, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+
+    return None
+
+
+def is_job_too_old(posted_date_raw, max_age_days: int) -> tuple[bool, str]:
+    """Check whether a job posting exceeds the age threshold.
+
+    Returns (too_old: bool, reason: str).
+    - (True,  "age:21d")   — older than max_age_days
+    - (False, "no_date")   — unparseable / missing date (pass through)
+    - (False, "ok")        — fresh enough
+    """
+    if max_age_days <= 0:
+        return False, "disabled"
+    dt = parse_posted_date(posted_date_raw)
+    if dt is None:
+        return False, "no_date"
+    age = datetime.now(timezone.utc) - dt
+    if age.days > max_age_days:
+        return True, f"age:{age.days}d"
+    return False, "ok"
+
+
+# ---------------------------------------------------------------------------
 # URL expiration screening — validates apply URLs before saving JDs
 # ---------------------------------------------------------------------------
 _EXPIRED_PHRASES = [
@@ -1139,11 +1205,19 @@ def deduplicate(jobs: list[dict]) -> list[dict]:
     return unique
 
 
-def save_jd_markdown(job: dict, jd_dir: Path, relevance_config: dict | None = None, validate_urls: bool = False) -> Path | None:
+def save_jd_markdown(job: dict, jd_dir: Path, relevance_config: dict | None = None,
+                     validate_urls: bool = False, max_jd_age_days: int = 0) -> Path | None:
     """Save a job description as a structured markdown file.
 
-    Returns None if the JD is filtered out by URL expiration or relevance scoring.
+    Returns None if the JD is filtered out by age, URL expiration, or relevance scoring.
     """
+    # Date age gate — reject stale postings before URL / relevance checks
+    if max_jd_age_days > 0:
+        too_old, age_reason = is_job_too_old(job.get("posted_date", ""), max_jd_age_days)
+        if too_old:
+            job["_expired_reason"] = age_reason
+            return None
+
     # URL validation — check before spending time on relevance scoring
     if validate_urls:
         apply_url = job.get("apply_url", "")
@@ -1260,6 +1334,7 @@ def run(dry_run: bool = False, source_filter: str | None = None, validate_urls: 
     jd_dir.mkdir(exist_ok=True)
     filters = config.get("filters", {})
     relevance_config = config.get("relevance")
+    max_jd_age_days = filters.get("max_jd_age_days", MAX_JD_AGE_DAYS)
 
     # Fetch from all enabled sources
     all_jobs: list[dict] = []
@@ -1313,6 +1388,8 @@ def run(dry_run: bool = False, source_filter: str | None = None, validate_urls: 
 
     # Save JDs
     print(f"\n[4/4] Saving {len(new_jobs)} new job descriptions...")
+    if max_jd_age_days > 0:
+        print(f"  Date age gate active (max: {max_jd_age_days} days)")
     if relevance_config:
         min_rel = relevance_config.get("min_score", 0.0)
         print(f"  Relevance filter active (min: {min_rel:.0%})")
@@ -1324,6 +1401,13 @@ def run(dry_run: bool = False, source_filter: str | None = None, validate_urls: 
     skipped_expired = 0
     for job in new_jobs:
         if dry_run:
+            # Date age gate in dry-run
+            if max_jd_age_days > 0:
+                too_old, age_reason = is_job_too_old(job.get("posted_date", ""), max_jd_age_days)
+                if too_old:
+                    print(f"  [DRY RUN] Skipped ({age_reason}): {job['title']} @ {job['company']}")
+                    skipped_expired += 1
+                    continue
             # URL expiration check in dry-run
             if validate_urls:
                 apply_url = job.get("apply_url", "")
@@ -1345,7 +1429,8 @@ def run(dry_run: bool = False, source_filter: str | None = None, validate_urls: 
                 rel_tag = f" [rel: {score:.0%}]"
             print(f"  [DRY RUN] Would save: {job['title']} @ {job['company']}{rel_tag}")
         else:
-            filepath = save_jd_markdown(job, jd_dir, relevance_config, validate_urls=validate_urls)
+            filepath = save_jd_markdown(job, jd_dir, relevance_config, validate_urls=validate_urls,
+                                        max_jd_age_days=max_jd_age_days)
             if filepath is None:
                 # Distinguish expired vs relevance-skipped
                 if job.get("_expired_reason"):

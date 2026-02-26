@@ -29,6 +29,8 @@ from pathlib import Path
 
 import yaml
 
+from fetcher import check_url_alive
+
 # ---------------------------------------------------------------------------
 # Paths & Config
 # ---------------------------------------------------------------------------
@@ -479,7 +481,8 @@ def open_html_report(html: str) -> Path:
 # Main
 # ---------------------------------------------------------------------------
 def run(no_email: bool = False, no_html: bool = False, since: str | None = None,
-        limit: int | None = None, min_match: int = 0, min_relevance: int = 0):
+        limit: int | None = None, min_match: int = 0, min_relevance: int = 0,
+        validate_urls: bool = True):
     print("=" * 60)
     print(f"  Notify — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
@@ -493,6 +496,8 @@ def run(no_email: bool = False, no_html: bool = False, since: str | None = None,
     new_packages = []
     for jd_name, entry in tailor_state.get("tailored", {}).items():
         if jd_name in notify_state.get("notified", {}):
+            continue
+        if entry.get("skipped_expired"):
             continue
         if since:
             proc_date = entry.get("processed_at", "")[:10]
@@ -558,6 +563,27 @@ def run(no_email: bool = False, no_html: bool = False, since: str | None = None,
         print(f"\n  {len(new_packages)} packages available, limiting to {limit}.")
         new_packages = new_packages[:limit]
 
+    # URL liveness check — drop packages with dead apply links
+    if validate_urls and new_packages:
+        live = []
+        dropped = []
+        for pkg in new_packages:
+            url = pkg.get("apply_url", "")
+            if url and url.startswith("http"):
+                is_alive, reason = check_url_alive(url)
+                if not is_alive:
+                    dropped.append((pkg, reason))
+                    continue
+            live.append(pkg)
+        if dropped:
+            print(f"\n  Dropped {len(dropped)} package(s) with expired URLs:")
+            for pkg, reason in dropped:
+                print(f"    - {pkg['role']} @ {pkg['company']} ({reason})")
+        new_packages = live
+        if not new_packages:
+            print("\n  No packages with live URLs remain.")
+            return
+
     print(f"\n  {len(new_packages)} new package(s) to notify about.\n")
 
     # Generate HTML digest
@@ -608,7 +634,9 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, help="Max number of packages to include in digest")
     parser.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include (e.g. 80)")
     parser.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include (e.g. 60)")
+    parser.add_argument("--no-url-check", action="store_true", help="Skip URL liveness validation")
     args = parser.parse_args()
 
     run(no_email=args.no_email, no_html=args.no_html, since=args.since,
-        limit=args.limit, min_match=args.min_match, min_relevance=args.min_relevance)
+        limit=args.limit, min_match=args.min_match, min_relevance=args.min_relevance,
+        validate_urls=not args.no_url_check)

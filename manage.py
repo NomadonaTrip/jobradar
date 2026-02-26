@@ -750,11 +750,17 @@ def cmd_run(args):
     env = {**os.environ, "PIPELINE_WORKDIR": str(cdir)}
 
     # Run the pipeline
+    no_url_check = getattr(args, "no_url_check", False)
     steps = []
     if not args.skip_fetch:
-        steps.append(("FETCH", [PYTHON, str(ROOT / "fetcher.py")]))
+        fetch_cmd = [PYTHON, str(ROOT / "fetcher.py")]
+        if no_url_check:
+            fetch_cmd.append("--no-url-check")
+        steps.append(("FETCH", fetch_cmd))
     if not args.fetch_only:
         tailor_cmd = [PYTHON, str(ROOT / "tailor.py"), "--limit", str(args.tailor_limit)]
+        if no_url_check:
+            tailor_cmd.append("--no-url-check")
         steps.append(("TAILOR", tailor_cmd))
         notify_cmd = [PYTHON, str(ROOT / "notify.py")]
         if args.no_email:
@@ -765,6 +771,8 @@ def cmd_run(args):
             notify_cmd.extend(["--min-match", str(args.min_match)])
         if args.min_relevance:
             notify_cmd.extend(["--min-relevance", str(args.min_relevance)])
+        if no_url_check:
+            notify_cmd.append("--no-url-check")
         steps.append(("NOTIFY", notify_cmd))
 
     for name, cmd in steps:
@@ -1096,6 +1104,7 @@ def main():
     p_run.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include in digest (e.g. 80)")
     p_run.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include in digest (e.g. 60)")
     p_run.add_argument("--no-email", action="store_true")
+    p_run.add_argument("--no-url-check", action="store_true", help="Skip URL liveness checks in all phases")
 
     # run-all
     p_all = subparsers.add_parser("run-all", help="Run pipeline for all customers")
@@ -1106,6 +1115,7 @@ def main():
     p_all.add_argument("--min-match", type=int, default=0, help="Minimum match %% to include in digest (e.g. 80)")
     p_all.add_argument("--min-relevance", type=int, default=0, help="Minimum relevance %% to include in digest (e.g. 60)")
     p_all.add_argument("--no-email", action="store_true")
+    p_all.add_argument("--no-url-check", action="store_true", help="Skip URL liveness checks in all phases")
 
     # renew
     p_renew = subparsers.add_parser("renew", help="Extend customer expiry date")

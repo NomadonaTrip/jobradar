@@ -29,6 +29,8 @@ from pathlib import Path
 
 import yaml
 
+from fetcher import check_url_alive
+
 # ---------------------------------------------------------------------------
 # AI Cliche Cleanup — Post-processing layer
 # ---------------------------------------------------------------------------
@@ -797,6 +799,17 @@ def process_jd(jd_path: Path, base_resume: str, config: dict, dry_run: bool = Fa
     return True
 
 
+def extract_apply_url(jd_path: Path) -> str:
+    """Extract the apply URL from a JD markdown file's metadata table."""
+    try:
+        for line in jd_path.read_text(encoding="utf-8").split("\n"):
+            if "**Apply**" in line and "|" in line:
+                return line.split("|")[2].strip().strip("*")
+    except (OSError, IndexError):
+        pass
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -815,7 +828,8 @@ def get_unprocessed_jds(jd_dir: Path, state: dict, jd_glob: str | None = None) -
     return unprocessed
 
 
-def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = None):
+def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = None,
+        validate_urls: bool = True):
     print("=" * 60)
     print(f"  Auto-Tailor — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
@@ -864,12 +878,32 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
         return
 
     print(f"  Output directory: {ROOT / 'output'}/")
+    if validate_urls:
+        print(f"  URL liveness check active (pre-tailor)")
     print()
 
     # Process each JD
     success = 0
     failed = 0
+    skipped_expired = 0
     for i, jd_path in enumerate(unprocessed, 1):
+        # Pre-tailor URL liveness check
+        if validate_urls:
+            apply_url = extract_apply_url(jd_path)
+            if apply_url and apply_url.startswith("http"):
+                is_alive, reason = check_url_alive(apply_url)
+                if not is_alive:
+                    print(f"  [{i}/{len(unprocessed)}] Skipped (expired: {reason}): {jd_path.name}")
+                    state["tailored"][jd_path.name] = {
+                        "processed_at": datetime.now(timezone.utc).isoformat(),
+                        "skipped_expired": True,
+                        "expired_reason": reason,
+                    }
+                    save_tailor_state(state)
+                    skipped_expired += 1
+                    failed += 1
+                    continue
+
         print(f"  [{i}/{len(unprocessed)}]", end="")
         ok = process_jd(jd_path, base_resume, config, dry_run=dry_run,
                         cover_letter_voice=cover_letter_voice,
@@ -896,6 +930,8 @@ def run(dry_run: bool = False, limit: int | None = None, jd_glob: str | None = N
     print(f"  Processed: {success + failed}")
     print(f"  Success:   {success}")
     print(f"  Failed:    {failed}")
+    if skipped_expired:
+        print(f"  Skipped (expired URL): {skipped_expired}")
     if not dry_run:
         print(f"  Output at: {ROOT / 'output'}/")
     print()
@@ -1025,9 +1061,12 @@ if __name__ == "__main__":
     parser.add_argument("--jd", type=str, help="Glob pattern to match specific JD files (e.g. 'CGI*.md')")
     parser.add_argument("--cover-letters-only", action="store_true",
                         help="Backfill cover letters for existing packages that are missing them")
+    parser.add_argument("--no-url-check", action="store_true",
+                        help="Skip URL liveness validation before tailoring")
     args = parser.parse_args()
 
     if args.cover_letters_only:
         backfill_cover_letters(dry_run=args.dry_run, limit=args.limit)
     else:
-        run(dry_run=args.dry_run, limit=args.limit, jd_glob=args.jd)
+        run(dry_run=args.dry_run, limit=args.limit, jd_glob=args.jd,
+            validate_urls=not args.no_url_check)
